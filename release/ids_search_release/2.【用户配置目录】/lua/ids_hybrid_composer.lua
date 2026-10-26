@@ -120,7 +120,8 @@ function M.segmentor.func(segmentation, env)
     elseif is_prefix then
         -- 处于未确认的前缀段（如单打 O 或末尾单引号检字段）
         seg = Segment(start, #input)
-        seg.tags = Set({env.tag})
+        -- 附带 ids_search 标签，无缝激活万象 special_mode 豁免字符集过滤，保护所有扩展区汉字
+        seg.tags = Set({env.tag, "ids_search"})
     else
         -- 处于字母或部件编码段：查找下一个单引号分隔符
         local next_quote = input:find("'", start + 1)
@@ -163,7 +164,8 @@ function M.translator.func(_, seg, env)
         local results = search.find(components, im_type)
         for _, text in ipairs(results) do
             local comment = search.get_comment(text)
-            local cand = Candidate("hanzi_result", seg.start, seg._end, text, comment)
+            -- 采用 ids_search 原生类型，获得万象全套 filter 最高级直接放行通道，杜绝注释篡改
+            local cand = Candidate("ids_search", seg.start, seg._end, text, comment)
             -- 核心：采用 Unicode 零宽空格 (U+200B)，既不 fallback 泄露单引号，又绝对不占用任何像素宽度，彻底消灭黑块！
             cand.preedit = kZeroWidthSpace
             yield(cand)
@@ -183,7 +185,7 @@ function M.filter.func(input, env)
 
     for cand in input:iter() do
         local typ = kind(cand)
-        if not searching or typ == "hanzi_result" then
+        if not searching or typ == "ids_search" or typ == "hanzi_result" then
             yield(cand)
         elseif seg and seg:has_tag("hanzi_component")
             and cand._end == seg._end and utf8.len(cand.text) == 1
@@ -214,7 +216,7 @@ function M.editor.init(env)
         if not is_active(context, env.prefix) then return end
         local cand = context:get_selected_candidate()
         local typ = kind(cand)
-        if typ ~= "hanzi_component" and typ ~= "hanzi_result" then return end
+        if typ ~= "hanzi_component" and typ ~= "ids_search" and typ ~= "hanzi_result" then return end
         env.selection = {
             type = typ,
             text = cand.text,
@@ -230,7 +232,7 @@ function M.editor.init(env)
         env.selection = nil
         context:set_option("_auto_commit", env.auto_commit)
 
-        if selected.type == "hanzi_result" then
+        if selected.type == "ids_search" or selected.type == "hanzi_result" then
             env.engine:commit_text(selected.text)
             context:clear()
         else

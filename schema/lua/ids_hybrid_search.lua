@@ -141,25 +141,25 @@ function M.init(dict_path, offset_path, info_path, info_idx_path)
     return true
 end
 
--- 获取单个汉字的元数据注释 (如: xiā ⿰目害 778E 基本)
+-- 获取单个汉字的元数据注释 (如: xiā ⿰目害 778E 基本，无拼音时: ⿻丅𠃍 323B0 扩J)
 function M.get_comment(ch)
     if not info_file or not info_idx_file or not ch or ch == "" then
-        return "〔检字〕"
+        return ""
     end
     local cp = utf8.codepoint(ch)
-    if not cp or cp >= 0x33000 then
-        return "〔检字〕"
+    if not cp or cp >= 0x34000 then
+        return ""
     end
 
     info_idx_file:seek("set", cp * 6)
     local raw_idx = info_idx_file:read(6)
     if not raw_idx or #raw_idx < 6 then
-        return "〔检字〕"
+        return ""
     end
 
     local pos, len = string.unpack("<I4I2", raw_idx)
     if len == 0 then
-        return "〔检字〕"
+        return ""
     end
 
     info_file:seek("set", pos)
@@ -167,7 +167,7 @@ function M.get_comment(ch)
     if comment and comment:sub(1, 1) == "[" then
         comment = comment:gsub("^%[([^%]]+)%]", "%1")
     end
-    return comment or "〔检字〕"
+    return comment or ""
 end
 
 -- 获取单个 key 对应的全部汉字列表 (支持 '火' 或 '火*2')
