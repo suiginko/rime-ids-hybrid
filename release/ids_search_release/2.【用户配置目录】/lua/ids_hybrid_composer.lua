@@ -166,8 +166,7 @@ function M.translator.func(_, seg, env)
             local comment = search.get_comment(text)
             -- 采用 ids_search 原生类型，获得万象全套 filter 最高级直接放行通道，杜绝注释篡改
             local cand = Candidate("ids_search", seg.start, seg._end, text, comment)
-            -- 核心：采用 Unicode 零宽空格 (U+200B)，既不 fallback 泄露单引号，又绝对不占用任何像素宽度，彻底消灭黑块！
-            cand.preedit = kZeroWidthSpace
+            cand.preedit = ""
             yield(cand)
         end
     end
