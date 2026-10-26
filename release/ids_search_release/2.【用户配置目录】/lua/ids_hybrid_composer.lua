@@ -120,9 +120,14 @@ function M.segmentor.func(segmentation, env)
         seg.tags = Set({"phony"})
         seg.status = "kConfirmed"
     elseif is_prefix then
-        -- 处于未确认的前缀段（如单打 O 或末尾单引号检字段）
         seg = Segment(start, #input)
-        seg.tags = Set({env.tag, "ids_search"})
+        if start == 0 then
+            -- 处于未确认的前缀段（单打大写 O）：仅保留 env.tag，严禁附加 ids_search 标签，绝不误触发 C++ 输出 ou 读音候选！
+            seg.tags = Set({env.tag})
+        else
+            -- 处于检字结果段（末尾单引号）：附带 ids_search 标签，激活万象放行白名单，豁免生僻字字符集过滤
+            seg.tags = Set({env.tag, "ids_search"})
+        end
     else
         -- 处于字母或部件编码段
         local next_quote = input:find("'", start + 1)
