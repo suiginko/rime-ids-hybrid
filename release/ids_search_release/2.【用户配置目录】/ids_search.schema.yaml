@@ -1,0 +1,121 @@
+# Rime schema
+# encoding: utf-8
+
+schema:
+  schema_id: ids_search
+  name: "部件模糊检字"
+  version: "1.6.0"
+  author: "zi.tools inspired"
+  description: |
+    字统 (zi.tools) 风格全量 Unicode 汉字部件模糊检字方案 (v1.6.0 高性能求交增强版)
+    - 方案一重构进化版：采用 32-bit Codepoint 定长倒排表 + 自包含紧凑元数据 (IDX2 + MET2)
+    - 多项部件求交哈希化（Posting Hash-Set Cache），消除大集合与深层部件线性扫表
+    - 倒排分块零拷贝预热与 GC 分代优化，输入响应延迟进一步压低至毫秒级
+    - 完备支持小鹤双拼、自然码、小禾双拼与全拼自动无缝混打
+    - 扩展 冃/日/曰 等价组与自定义扩展支持（ri/mao 均可顺畅检字）
+    - 覆盖全量 10.4 万+ 汉字（含 Unicode 17.0 Ext J），显示读音、IDS、Unicode码与所属分区
+
+switches:
+  - options: [ pinyin_quanpin, shuangpin_flypy, shuangpin_zrm ]
+    states: [ "全拼", "小鹤双拼", "自然码" ]
+    reset: 1
+    # 状态持久化记忆：可通过选单 (Ctrl+~) 切换全拼/小鹤双拼/自然码，自动保存用户偏好
+  - name: show_pinyin
+    states: [ "关读音", "开读音" ]
+    reset: 1
+  - name: show_ids
+    states: [ "关结构", "开结构" ]
+    reset: 1
+  - name: show_unicode
+    states: [ "关编码", "开编码" ]
+    reset: 1
+  - name: show_block
+    states: [ "关分区", "开分区" ]
+    reset: 1
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - matcher
+    - abc_segmentor
+    - fallback_segmentor
+  translators:
+    - echo_translator
+    - ids_search_translator
+  filters:
+    - uniquifier
+
+speller:
+  alphabet: "abcdefghijklmnopqrstuvwxyz'"
+  delimiter: " '"
+
+punctuator:
+  full_shape:
+    ",": { commit: "，" }
+    .: { commit: "。" }
+  half_shape:
+    ",": { commit: "，" }
+    .: { commit: "。" }
+
+# ==============================================================================
+# 翻页快捷键配置 (key_binder)
+# 支持：逗号句号 (,/.)、减号等号 (-/=)、左右方括号 ([/])、分号次选 (;)
+# 若需禁用某组按键，只需在对应行前加 # 注释即可；修改后重新部署即可生效。
+# ==============================================================================
+key_binder:
+  bindings:
+    # 1. 逗号句号翻页 (comma / period)
+    - { when: paging, accept: comma, send: Page_Up }
+    - { when: has_menu, accept: comma, send: Page_Up }
+    - { when: paging, accept: period, send: Page_Down }
+    - { when: has_menu, accept: period, send: Page_Down }
+
+    # 2. 减号加号翻页 (minus / equal)
+    - { when: paging, accept: minus, send: Page_Up }
+    - { when: has_menu, accept: minus, send: Page_Up }
+    - { when: paging, accept: equal, send: Page_Down }
+    - { when: has_menu, accept: equal, send: Page_Down }
+
+    # 3. 左右方括号翻页 (bracketleft / bracketright)
+    - { when: paging, accept: bracketleft, send: Page_Up }
+    - { when: has_menu, accept: bracketleft, send: Page_Up }
+    - { when: paging, accept: bracketright, send: Page_Down }
+    - { when: has_menu, accept: bracketright, send: Page_Down }
+
+    # 4. 次选分号 (semicolon)
+    - { when: has_menu, accept: semicolon, send: 2 }
+
+    # 5. 方案快捷切换
+    - { when: always, accept: Control+Shift+space, select: wanxiang_pro }  # Ctrl+Shift+Space 直达切回万象
+    - { when: always, accept: Shift+space, select: wanxiang_pro }          # Shift+Space 直达切回万象
+
+recognizer:
+  patterns:
+    ids_search: '^[^,.;=\[\]\s0-9-]+$'
+
+ids_search: &ids_search_conf
+  data_file: build/ids_data.bin
+  tag: ids_search
+  prefix: "" # 独立方案中无需前缀，直接输入部件拼音、双拼或汉字即可检索
+  tips: "〔部件检字〕"
+  max_results: 80
+  shuangpin_scheme: flypy # 双拼编码方案: flypy (小鹤双拼) 或 zrm (自然码)
+  show_pinyin: true   # 是否在提示中显示汉字读音（可由 Ctrl+~ 选单动态切换）
+  show_ids: true      # 是否在提示中显示 IDS 拆分结构（可由 Ctrl+~ 选单动态切换）
+  show_unicode: true  # 是否在提示中显示 Unicode 16 进制编码（可由 Ctrl+~ 选单动态切换）
+  show_block: true    # 是否在提示中显示所属 Unicode 分区（可由 Ctrl+~ 选单动态切换）
+  custom_file: ids_custom.txt
+  disabled_blocks: []
+
+ids_search_translator: *ids_search_conf
+
+menu:
+  page_size: 9

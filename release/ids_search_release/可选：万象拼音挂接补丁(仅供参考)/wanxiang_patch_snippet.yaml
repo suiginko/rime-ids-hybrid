@@ -1,0 +1,41 @@
+# ==============================================================================
+# 万象拼音挂接部件检字 (librime-ids-search C++ 原生插件 IDS3 单文件架构) 片段
+# 若您已有自己的 wanxiang_pro.custom.yaml，请将以下内容追加合并至您的 patch 节点下：
+# ==============================================================================
+
+patch:
+  # 1. 依赖声明
+  schema/dependencies/+:
+    - ids_search
+
+  # 2. 挂接识别正则（大写 I 引导，排除数字选字与逗号/句号翻页）
+  recognizer/patterns/ids_search: '^I[^0-9,.;=\[\]\s-]*$'
+
+  # 3. 挂接分段器（在输入前缀 I 时，在输入条右侧即时显示〔ids检字〕提示）
+  engine/segmentors/@before 3: affix_segmentor@ids_search
+  ids_search:
+    tag: ids_search
+    prefix: "I"
+    tips: "〔ids检字〕"
+
+  # 4. 挂接原生 C++ 检字组件 (使用 ids_trans 独立命名空间杜绝前缀二次剥离冲突)
+  engine/translators/+:
+    - ids_search_translator@ids_trans
+
+  # 5. 检字组件参数配置 (IDS3 极速单文件架构)
+  ids_trans: &ids_trans_conf
+    data_file: build/ids_data.bin
+    tag: ids_search
+    prefix: ""              # 前缀已由 affix_segmentor 自动剥离
+    tips: "〔ids检字〕"
+    max_results: 60
+    shuangpin_scheme: flypy # 双拼方案：flypy(小鹤) 或 zrm(自然码)
+    show_pinyin: true       # 候选注释中显示汉字读音
+    show_ids: true          # 候选注释中显示 IDS 拆分结构
+    show_unicode: true      # 候选注释中显示 Unicode 16进制编码
+    show_block: true        # 候选注释中显示所属 Unicode 分区
+    ids_format: unicode     # 结构符号格式: unicode(原生IDC符号) / plain(纯文字无方块) / bracket(文字标签)
+    custom_file: ids_custom.txt
+
+  # 兼容锚点
+  ids_search_translator: *ids_trans_conf

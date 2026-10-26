@@ -1,0 +1,31 @@
+# Git Ignore for rime-ids-hybrid
+
+# 临时与历史构建备份
+backup/
+release/*.zip
+*.bak
+*.tmp
+
+# 调试与大型符号文件
+*.pdb
+dist/lib/rime.pdb
+
+# 临时测试与调试脚本
+check_*.py
+test_*.py
+test_*.lua
+debug_*.py
+simulate_*.py
+scratch_*.txt
+patch_*.py
+verify_*.py
+clean_proc.py
+fix_proc.py
+update_tips.py
+update_wanxiang_tips.py
+
+# 编辑器与环境
+.gemini/
+.vscode/
+__pycache__/
+*.py[cod]

@@ -1,0 +1,34 @@
+# wanxiang_pro.custom.yaml.sample
+# 将部件模糊检字 (ids_search) 挂载到万象拼音 (wanxiang_pro) 的参考示例补丁
+# 触发前缀：大写 I
+
+patch:
+  # 1. 触发前缀正则匹配 (排除逗号句号等翻页/次选键，确保精准翻页不被吸入编码)
+  recognizer/patterns/ids_search: "^I[^,.\-=\\[\\];\\s]*$"
+
+  # 2. 键位绑定：句号翻页、逗号上一页、分号次选
+  key_binder/bindings/+:
+    - { when: paging, accept: comma, send: Page_Up }
+    - { when: has_menu, accept: comma, send: Page_Up }
+    - { when: paging, accept: period, send: Page_Down }
+    - { when: has_menu, accept: period, send: Page_Down }
+    - { when: has_menu, accept: semicolon, send: 2 }
+
+  # 3. 挂载检字翻译器 (librime-ids-search C++ 插件原生组件)
+  engine/translators/+:
+    - ids_search_translator
+
+  # 4. 副方案运行参数配置
+  ids_search_translator:
+    index_file: build/ids_index.bin  # 相对路径基于用户数据目录；不存在则回退共享数据目录
+    meta_file: build/ids_meta.bin
+    tag: ids_search                  # 核心：标签严格隔离，保证常规拼音底层跳过检字，0 延迟
+    prefix: "I"                      # 触发前缀，需与上方 recognizer 一致
+    tips: "〔部件检字〕"             # 引导提示词
+    max_results: 60                  # 最大候选数量
+    shuangpin_scheme: "flypy"        # 双拼解析方案：flypy (小鹤双拼) 或 zrm (自然码)
+    show_pinyin: true                # 是否在候选提示中显示读音
+    show_ids: true                   # 是否在候选提示中显示IDS结构
+    show_unicode: true               # 是否在候选提示中显示Unicode编码
+    show_block: true                 # 是否在候选提示中显示所属字符分区
+    custom_file: ids_custom.txt

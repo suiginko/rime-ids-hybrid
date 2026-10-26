@@ -1,0 +1,11 @@
+RIME_PLUGINS=hchunhui/librime-lua lotem/librime-octagram rime/librime-predict Carlson24/librime-ids-search 
+librime 
+a3bb050
+hchunhui/librime-lua 
+6da5d6c
+lotem/librime-octagram 
+57d18b9
+rime/librime-predict 
+920bd41
+Carlson24/librime-ids-search 
+18b5cdc
