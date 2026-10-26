@@ -177,26 +177,125 @@ function M.translator.func(_, seg, env)
 end
 
 -------------------------------------------------------------------------------
--- 3. Filter: 部件单字过滤
+-- 3. Filter: 部件单字过滤与万象自定义短语置顶
 -------------------------------------------------------------------------------
-M.filter.init = configure
+function M.filter.init(env)
+    configure(env)
+    pcall(function()
+        env.custom_translator = Component.Translator(env.engine, "custom_phrase", "script_translator")
+    end)
+    pcall(function()
+        local config = env.engine.schema.config
+        env.insert_position = math.max(1, config:get_int("abbrev_phrase/insert_position") or 2)
+        env.max_candidates = math.max(0, config:get_int("abbrev_phrase/max_candidates") or 3)
+        env.abbrev_translator = Component.Translator(env.engine, "abbrev_phrase", "script_translator")
+    end)
+end
+
+function M.filter.fini(env)
+    if env.custom_translator and type(env.custom_translator.disconnect) == "function" then
+        env.custom_translator:disconnect()
+    end
+    if env.abbrev_translator and type(env.abbrev_translator.disconnect) == "function" then
+        env.abbrev_translator:disconnect()
+    end
+    env.custom_translator = nil
+    env.abbrev_translator = nil
+end
 
 function M.filter.func(input, env)
     local ctx = env.engine.context
     local searching = is_active(ctx, env.prefix)
     local seg = searching and not ctx.composition:empty() and ctx.composition:back()
 
+    -- 非检字模式或非部件选择段，直接放行
+    if not searching or not seg or not seg:has_tag("hanzi_component") then
+        for cand in input:iter() do
+            yield(cand)
+        end
+        return
+    end
+
+    local code = ctx.input:sub(seg.start + 1, seg._end)
+    local seen_texts = {}
+    local custom_cands = {}
+
+    -- 1. 查询万象自定义短语（custom_phrase），置顶用户定义的单字（如干、得、再、有、大、酉等）
+    if env.custom_translator and code ~= "" then
+        local ok, trans = pcall(function() return env.custom_translator:query(code, seg) end)
+        if ok and trans then
+            for c in trans:iter() do
+                local text = c.text
+                if text and utf8.len(text) == 1 and not seen_texts[text] and not text:find("[\t\r\n ]") then
+                    seen_texts[text] = true
+                    local comp_cand = Candidate("hanzi_component", seg.start, seg._end, text, c.comment or "")
+                    comp_cand.preedit = c.preedit
+                    custom_cands[#custom_cands + 1] = comp_cand
+                end
+            end
+        end
+    end
+
+    -- 2. 查询万象简码（abbrev_phrase，支持前置单字简码）
+    local abbrev_cands = {}
+    local abbrev_enabled = ctx:get_option("abbrev")
+    if abbrev_enabled and env.abbrev_translator and env.max_candidates and env.max_candidates > 0 and code ~= "" then
+        local ok, trans = pcall(function() return env.abbrev_translator:query(code, seg) end)
+        if ok and trans then
+            for c in trans:iter() do
+                local text = c.text
+                if text and utf8.len(text) == 1 and not seen_texts[text] and not text:find("[\t\r\n ]") then
+                    seen_texts[text] = true
+                    local comp_cand = Candidate("hanzi_component", seg.start, seg._end, text, c.comment or "")
+                    comp_cand.preedit = c.preedit
+                    abbrev_cands[#abbrev_cands + 1] = comp_cand
+                    if #abbrev_cands >= env.max_candidates then break end
+                end
+            end
+        end
+    end
+
+    local emitted = 0
+    -- 首先输出自定义短语置顶候选
+    for _, cc in ipairs(custom_cands) do
+        emitted = emitted + 1
+        yield(cc)
+    end
+
+    local abbrev_done = (#abbrev_cands == 0)
+    local insert_pos = env.insert_position or 2
+
+    -- 遍历常规翻译器输出的候选，过滤单字并去重
     for cand in input:iter() do
         local typ = kind(cand)
-        if not searching or typ == "ids_search" or typ == "hanzi_result" then
+        if typ == "ids_search" or typ == "hanzi_result" then
             yield(cand)
-        elseif seg and seg:has_tag("hanzi_component")
-            and cand._end == seg._end and utf8.len(cand.text) == 1
-            and not cand.text:find("[\t\r\n ]") then
-            local comp_cand = Candidate("hanzi_component", cand.start, cand._end, cand.text, cand.comment)
-            comp_cand.preedit = cand.preedit
-            comp_cand.quality = cand.quality
-            yield(comp_cand)
+        elseif cand._end == seg._end and utf8.len(cand.text) == 1 and not cand.text:find("[\t\r\n ]") then
+            -- 达到插入位时输出简码
+            if not abbrev_done and emitted >= insert_pos - 1 then
+                abbrev_done = true
+                for _, ac in ipairs(abbrev_cands) do
+                    emitted = emitted + 1
+                    yield(ac)
+                end
+            end
+
+            -- 去重输出常规单字候选
+            if not seen_texts[cand.text] then
+                seen_texts[cand.text] = true
+                local comp_cand = Candidate("hanzi_component", cand.start, cand._end, cand.text, cand.comment)
+                comp_cand.preedit = cand.preedit
+                comp_cand.quality = cand.quality
+                emitted = emitted + 1
+                yield(comp_cand)
+            end
+        end
+    end
+
+    -- 兜底输出剩余简码（若常规候选数量不足以触发插入位）
+    if not abbrev_done then
+        for _, ac in ipairs(abbrev_cands) do
+            yield(ac)
         end
     end
 end
