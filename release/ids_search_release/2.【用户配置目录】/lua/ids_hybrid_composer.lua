@@ -112,20 +112,31 @@ function M.segmentor.func(segmentation, env)
     local prefix_end = (start == 0 and #env.prefix) or (start + 1)
     local is_prefix = (start == 0) or (input:sub(start + 1, start + 1) == "'")
 
+    local components, _, pending = state(ctx, env.prefix)
+
     local seg
     if is_prefix and prefix_end < #input then
         seg = Segment(start, prefix_end)
         seg.tags = Set({"phony"})
         seg.status = "kConfirmed"
     elseif is_prefix then
-        -- 处于未确认的前缀段（如单打 O 或末尾单引号检字段）
+        -- 处于未确认的前缀段（如单打 O）
         seg = Segment(start, #input)
-        -- 附带 ids_search 标签，无缝激活万象 special_mode 豁免字符集过滤，保护所有扩展区汉字
         seg.tags = Set({env.tag, "ids_search"})
     else
-        -- 处于字母或部件编码段：查找下一个单引号分隔符
+        -- 处于字母或部件编码段
         local next_quote = input:find("'", start + 1)
-        if next_quote then
+        if next_quote and next_quote < #input then
+            -- 后面还有后续部件：当前历史部件正常确认
+            seg = Segment(start, next_quote - 1)
+            seg.status = "kConfirmed"
+            seg.tags = Set({"confirmed_component"})
+        elseif next_quote and next_quote == #input and pending == "" and #components > 0 then
+            -- 核心升级：编码已用完进入检字态，将最后一个部件连同末尾单引号整体作为活动检字段！
+            -- 彻底吞并末尾单引号，从根本上杜绝孤立悬空黑块与单引号外泄！
+            seg = Segment(start, #input)
+            seg.tags = Set({env.tag, "ids_search"})
+        elseif next_quote then
             seg = Segment(start, next_quote - 1)
             seg.status = "kConfirmed"
             seg.tags = Set({"confirmed_component"})
@@ -143,7 +154,7 @@ function M.segmentor.func(segmentation, env)
 end
 
 -------------------------------------------------------------------------------
--- 2. Translator: 产生全量检字候选（带全套结构、读音与Unicode信息，零宽空格彻底消灭黑块）
+-- 2. Translator: 产生全量检字候选（带全套结构、读音与Unicode信息，彻底消灭黑块与单引号外泄）
 -------------------------------------------------------------------------------
 function M.translator.init(env)
     configure(env)
@@ -162,11 +173,13 @@ function M.translator.func(_, seg, env)
     if pending == "" and #components > 0 then
         local im_type = get_im_type(env)
         local results = search.find(components, im_type)
+        local last_comp = components[#components] or ""
         for _, text in ipairs(results) do
             local comment = search.get_comment(text)
             -- 采用 ids_search 原生类型，获得万象全套 filter 最高级直接放行通道，杜绝注释篡改
             local cand = Candidate("ids_search", seg.start, seg._end, text, comment)
-            cand.preedit = ""
+            -- 将 preedit 赋予最后一个部件文本，使得高亮背景正好契合部件字形，绝无悬空空黑块
+            cand.preedit = last_comp
             yield(cand)
         end
     end
