@@ -221,12 +221,14 @@ function M.filter.func(input, env)
     local custom_cands = {}
 
     -- 1. 查询万象自定义短语（custom_phrase），置顶用户定义的单字（如干、得、再、有、大、酉等）
+    -- 必须满足完整编码匹配（c._end == seg._end），严禁前缀残码匹配（杜绝打 kz 误匹配 k 的可字并吞噬 z）
     if env.custom_translator and code ~= "" then
         local ok, trans = pcall(function() return env.custom_translator:query(code, seg) end)
         if ok and trans then
             for c in trans:iter() do
                 local text = c.text
-                if text and utf8.len(text) == 1 and not seen_texts[text] and not text:find("[\t\r\n ]") then
+                if c._end == seg._end and c.type ~= "sentence"
+                    and text and utf8.len(text) == 1 and not seen_texts[text] and not text:find("[\t\r\n ]") then
                     seen_texts[text] = true
                     local comp_cand = Candidate("hanzi_component", seg.start, seg._end, text, c.comment or "")
                     comp_cand.preedit = c.preedit
@@ -236,7 +238,7 @@ function M.filter.func(input, env)
         end
     end
 
-    -- 2. 查询万象简码（abbrev_phrase，支持前置单字简码）
+    -- 2. 查询万象简码（abbrev_phrase，支持前置单字简码，同样严格要求整码匹配）
     local abbrev_cands = {}
     local abbrev_enabled = ctx:get_option("abbrev")
     if abbrev_enabled and env.abbrev_translator and env.max_candidates and env.max_candidates > 0 and code ~= "" then
@@ -244,7 +246,8 @@ function M.filter.func(input, env)
         if ok and trans then
             for c in trans:iter() do
                 local text = c.text
-                if text and utf8.len(text) == 1 and not seen_texts[text] and not text:find("[\t\r\n ]") then
+                if c._end == seg._end and c.type ~= "sentence"
+                    and text and utf8.len(text) == 1 and not seen_texts[text] and not text:find("[\t\r\n ]") then
                     seen_texts[text] = true
                     local comp_cand = Candidate("hanzi_component", seg.start, seg._end, text, c.comment or "")
                     comp_cand.preedit = c.preedit
