@@ -174,10 +174,10 @@ function M.segmentor.func(segmentation, env)
                 seg.status = "kConfirmed"
                 seg.tags = Set({"confirmed_component"})
             elseif start + 1 == #input then
-                -- 刚敲入减号，等待后续部件编码：状态设为 kGuess，标签设为 confirmed_component，在 preedit 编码行显式显示减号！
+                -- 刚敲入减号，等待后续部件编码：状态设为 kGuess，标签包含 env.tag 和 ids_search，保持当前候选不立刻全部消失，防候选数量剧烈跳变！
                 seg = Segment(start, #input)
                 seg.status = "kGuess"
-                seg.tags = Set({"confirmed_component"})
+                seg.tags = Set({"confirmed_component", env.tag, "ids_search"})
             else
                 seg = Segment(start, start + 1)
                 seg.status = "kConfirmed"
@@ -217,17 +217,18 @@ end
 function M.translator.func(_, seg, env)
     if not seg:has_tag(env.tag) then return end
     local components, _, pending = state(env.engine.context, env.prefix)
-    if pending == "" and #components > 0 then
+    if (pending == "" or pending == "-") and #components > 0 then
         local im_type = get_im_type(env)
         local results = search.find(components, im_type)
+        local preedit_str = (pending == "-") and "-\t" or "\t"
         for _, text in ipairs(results) do
             local comment = search.get_comment(text)
             -- 采用 ids_search 原生类型，获得万象全套 filter 最高级直接放行通道，杜绝注释篡改
             local cand = Candidate("ids_search", seg.start, seg._end, text, comment)
             -- 核心：利用 librime composition 内部 \t (caret_placeholder) 原生特性：
             -- 1. \t 置于首位使得 preedit.sel_start == preedit.sel_end，小狼毫判定高亮范围为零，彻底消灭残留黑块；
-            -- 2. 预编辑文本追加为空，前置已确认部件自然呈现为“金色”，绝不重复最后一个部件！
-            cand.preedit = "\t"
+            -- 2. 预编辑文本追加为空（刚按减号时追加 "-\t" 保证减号可见），候选窗口平滑常驻，杜绝突变闪退！
+            cand.preedit = preedit_str
             yield(cand)
         end
     end
@@ -609,8 +610,8 @@ function M.editor.func(key, env)
             ctx:clear()
             return kAccepted
         end
-        -- B. 正在输入部件编码（pending ~= ""）：回车直接将字母编码作为部件参与检字，不选首选字！
-        if pending ~= "" then
+        -- B. 正在输入部件编码（pending ~= "" 且不是单纯的 "-"）：回车直接将字母编码作为部件参与检字，不选首选字！
+        if pending ~= "" and pending ~= "-" then
             if not ctx.composition:empty() then
                 ctx.composition:pop_back()
             end
