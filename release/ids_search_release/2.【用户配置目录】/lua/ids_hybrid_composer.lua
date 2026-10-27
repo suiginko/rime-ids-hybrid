@@ -475,15 +475,24 @@ local function open_zitools_for_candidate(text)
     end)
     local url = "https://zi.tools/zi/" .. encoded
 
-    -- Windows 下无黑框静默启动系统默认浏览器
-    local cmd = string.format('rundll32 url.dll,FileProtocolHandler "%s"', url)
-    local ok = os.execute(cmd)
+    -- 调试日志记录
+    pcall(function()
+        local lf = io.open("C:/Users/Hg/AppData/Roaming/Rime/zitools_debug.log", "a")
+        if lf then
+            lf:write(string.format("[%s] open_zitools: char=%s url=%s\n", os.date("%Y-%m-%d %H:%M:%S"), first_char, url))
+            lf:close()
+        end
+    end)
+
+    -- Windows 下纯 GUI 静默直调默认浏览器，彻底消灭控制台黑框闪烁：
+    -- 利用 mshta 的 WScript.Shell.Run 直接交由 Windows Shell 处理，0.00 秒黑框，绝对纯净！
+    local silent_cmd = string.format('mshta vbscript:createobject("wscript.shell").run("%s",1,false)(window.close)', url)
+    local ok = os.execute(silent_cmd)
     if not ok then
-        -- Android 等系统兜底
-        pcall(function()
-            os.execute(string.format('am start -a android.intent.action.VIEW -d "%s"', url))
-        end)
+        -- 备用兜底
+        os.execute(string.format('cmd.exe /c start "" "%s"', url))
     end
+
     return true
 end
 
@@ -519,6 +528,18 @@ function M.editor.func(key, env)
 
     -- 0.1 候选增强功能：按组合键上屏某个候选的 IDS 描述结构 或 用某个候选字打开浏览器搜索字统网
     local has_menu = ctx:has_menu() or ctx:is_composing() or (not ctx.composition:empty())
+
+    if (key:ctrl() or key:alt() or repr:find("Control") or repr:find("Alt")) and has_menu then
+        pcall(function()
+            local kf = io.open("C:/Users/Hg/AppData/Roaming/Rime/key_debug.log", "a")
+            if kf then
+                kf:write(string.format("[%s] repr=%s code=0x%x ctrl=%s alt=%s shift=%s\n",
+                    os.date("%Y-%m-%d %H:%M:%S"), repr, code, tostring(key:ctrl()), tostring(key:alt()), tostring(key:shift())))
+                kf:close()
+            end
+        end)
+    end
+
     if has_menu then
         local is_ctrl = key:ctrl() or (repr:find("Control") ~= nil) or (repr:find("Ctrl") ~= nil)
         local is_alt = key:alt() or (repr:find("Alt") ~= nil)
@@ -569,9 +590,9 @@ function M.editor.func(key, env)
         local is_ids_action = false
         local ids_digit = nil
 
-        if (is_ctrl and not is_shift and is_return)
-            or (is_alt and not is_shift and is_return)
-            or (is_alt and (code == 0x69 or code == 0x49 or repr:find("[iI]") ~= nil))
+        if (is_ctrl and not is_shift and not is_alt and is_return)
+            or (is_alt and not is_shift and not is_ctrl and is_return)
+            or (is_alt and not is_ctrl and (code == 0x69 or code == 0x49 or repr:find("[iI]") ~= nil))
             or (is_ctrl and is_shift and (code == 0x69 or code == 0x49 or repr:find("[iI]") ~= nil)) then
             is_ids_action = true
             ids_digit = nil
@@ -596,17 +617,24 @@ function M.editor.func(key, env)
 
         -- 功能 2：按组合键用某个候选字打开浏览器搜索字统网 (zi.tools)
         -- 快捷键支持：
-        -- 1. Control+Shift+Return、Alt+z / Alt+Z、Control+Shift+Z (当前高亮候选)
-        -- 2. Control+Shift+1 ~ 6、Alt+Shift+1 ~ 6 (指定序号候选)
+        -- 1. Control+o / Control+O (Open，最顺手无冲突！)
+        -- 2. Control+Alt+Return、Control+Shift+Return、Alt+z / Alt+Z、Control+Shift+Z (当前高亮候选)
+        -- 3. Control+Alt+1 ~ 6、Control+Shift+1 ~ 6、Alt+Shift+1 ~ 6 (指定序号候选)
         local is_zitools_action = false
         local zitools_digit = nil
 
-        if (is_ctrl and is_shift and is_return)
-            or (is_alt and (code == 0x7a or code == 0x5a or repr:find("[zZ]") ~= nil))
-            or (is_ctrl and is_shift and (code == 0x7a or code == 0x5a or repr:find("[zZ]") ~= nil)) then
+        local is_o_key = (code == 0x6f or code == 0x4f or repr:find("[oO]") ~= nil)
+        local is_z_key = (code == 0x7a or code == 0x5a or repr:find("[zZ]") ~= nil)
+
+        if (is_ctrl and not is_alt and not is_shift and is_o_key)
+            or (is_ctrl and is_alt and is_return)
+            or (is_ctrl and is_shift and is_return)
+            or (is_alt and not is_ctrl and is_z_key)
+            or (is_ctrl and is_shift and is_z_key) then
             is_zitools_action = true
             zitools_digit = nil
-        elseif (is_shift and select_digit and (is_ctrl or is_alt)) then
+        elseif (is_ctrl and is_alt and select_digit)
+            or (is_shift and select_digit and (is_ctrl or is_alt)) then
             is_zitools_action = true
             zitools_digit = select_digit
         end
