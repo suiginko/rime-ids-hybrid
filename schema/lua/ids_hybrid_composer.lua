@@ -55,16 +55,28 @@ local function get_im_type(env)
 end
 
 local function configure(env)
-    local config = env.engine.schema.config
-    env.prefix = config:get_string("ids_hybrid/prefix") or "O"
-    env.tag = config:get_string("ids_hybrid/tag") or "ids_search_hybrid"
-    env.direct_prefix = config:get_string("ids_search/prefix") or "I"
-    env.tips = config:get_string("ids_hybrid/tips") or kDefaultTips
-    env.page_size = config:get_int("menu/page_size") or 5
-    env.im_type = get_im_type(env)
+    if not env then return end
+    local config = env.engine and env.engine.schema and env.engine.schema.config
+    if config then
+        env.prefix = config:get_string("ids_hybrid/prefix") or "O"
+        env.tag = config:get_string("ids_hybrid/tag") or "ids_search_hybrid"
+        env.direct_prefix = config:get_string("ids_search/prefix") or "I"
+        env.tips = config:get_string("ids_hybrid/tips") or kDefaultTips
+        env.page_size = config:get_int("menu/page_size") or 5
+        env.im_type = get_im_type(env)
+    else
+        env.prefix = "O"
+        env.tag = "ids_search_hybrid"
+        env.direct_prefix = "I"
+        env.tips = kDefaultTips
+        env.page_size = 5
+        env.im_type = "flypy"
+    end
 end
 
 local function is_active(ctx, prefix)
+    prefix = prefix or "O"
+    if not ctx or not ctx.input or #ctx.input < #prefix then return false end
     return ctx.input:sub(1, #prefix) == prefix and not ctx:get_option("ascii_mode")
 end
 
@@ -95,7 +107,9 @@ end
 
 local function kind(cand)
     if not cand then return nil end
-    return cand:get_genuine().type
+    local ok, genuine = pcall(function() return cand:get_genuine() end)
+    if ok and genuine and genuine.type then return genuine.type end
+    return cand.type
 end
 
 -------------------------------------------------------------------------------
@@ -187,7 +201,6 @@ end
 -- 3. Filter: 部件单字过滤与万象自定义短语置顶
 -------------------------------------------------------------------------------
 function M.filter.init(env)
-    log_debug("M.filter.init called")
 
     configure(env)
     pcall(function()
@@ -302,11 +315,9 @@ function M.filter.func(input, env)
             -- 去重输出常规单字候选，并确保候选类型为 hanzi_component 以便 editor 正确捕获并推入检字
             if not seen_texts[cand.text] then
                 seen_texts[cand.text] = true
-                local comp_cand = Candidate("hanzi_component", cand.start, cand._end, cand.text, cand.comment or "")
-                if cand.preedit then comp_cand.preedit = cand.preedit end
-                if cand.quality then comp_cand.quality = cand.quality end
+                cand.type = "hanzi_component"
                 emitted = emitted + 1
-                yield(comp_cand)
+                yield(cand)
             end
         end
     end
@@ -336,12 +347,15 @@ function M.editor.init(env)
     env.before = ctx.select_notifier:connect(function(context)
         if not is_active(context, env.prefix) then return end
         local cand = context:get_selected_candidate()
+        if not cand then return end
         local typ = kind(cand)
-        if typ ~= "hanzi_component" and typ ~= "ids_search" and typ ~= "hanzi_result" then return end
+        local is_search_result = (typ == "ids_search" or typ == "hanzi_result")
+        local genuine = nil
+        pcall(function() genuine = cand:get_genuine() end)
         env.selection = {
-            type = typ,
+            type = is_search_result and "ids_search" or "hanzi_component",
             text = cand.text,
-            component = cand:get_genuine().text
+            component = genuine and genuine.text or cand.text
         }
         env.auto_commit = context:get_option("_auto_commit")
         context:set_option("_auto_commit", false)
