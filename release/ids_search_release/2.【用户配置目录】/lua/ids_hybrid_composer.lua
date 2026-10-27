@@ -80,6 +80,22 @@ local function is_active(ctx, prefix)
     return ctx.input:sub(1, #prefix) == prefix and not ctx:get_option("ascii_mode")
 end
 
+-- 动态接管与恢复万象简码开关（abbrev）：
+-- 在 O 检字模式下暂时关闭 abbrev，彻底阻断 super_replacer 强行向首选注入 abbrev.txt 中的 6 个二字词组！
+local function suppress_abbrev(ctx)
+    if ctx and ctx:get_option("abbrev") then
+        ctx:set_property("ids_saved_abbrev", "1")
+        ctx:set_option("abbrev", false)
+    end
+end
+
+local function restore_abbrev(ctx)
+    if ctx and ctx:get_property("ids_saved_abbrev") == "1" then
+        ctx:set_property("ids_saved_abbrev", "")
+        ctx:set_option("abbrev", true)
+    end
+end
+
 -- 解析当前状态：返回 components 数组、codes 数组、以及当前未确认的 pending 拼音
 local function state(ctx, trigger)
     local components, codes = {}, {}
@@ -119,7 +135,11 @@ M.segmentor.init = configure
 
 function M.segmentor.func(segmentation, env)
     local ctx = env.engine.context
-    if not is_active(ctx, env.prefix) then return true end
+    if not is_active(ctx, env.prefix) then
+        restore_abbrev(ctx)
+        return true
+    end
+    suppress_abbrev(ctx)
 
     local start = segmentation:get_current_start_position()
     if start >= #segmentation.input then return false end
@@ -231,11 +251,15 @@ function M.filter.func(input, env)
 
     -- 非检字模式，直接放行全部候选（零干扰）
     if not searching then
+        restore_abbrev(ctx)
         for cand in input:iter() do
             yield(cand)
         end
         return
     end
+
+    -- 检字模式下双重确保万象简码关闭，阻断 super_replacer 注入二字缩写词
+    suppress_abbrev(ctx)
 
     local seg = not ctx.composition:empty() and ctx.composition:back()
     local code = ""
@@ -370,6 +394,7 @@ function M.editor.init(env)
         if selected.type == "ids_search" or selected.type == "hanzi_result" then
             env.engine:commit_text(selected.text)
             context:clear()
+            restore_abbrev(context)
         else
             local components, codes, pending = state(context, env.prefix)
             components[#components + 1] = selected.component
@@ -382,12 +407,16 @@ function M.editor.init(env)
 
     env.update = ctx.update_notifier:connect(function(context)
         if is_active(context, env.prefix) then
+            suppress_abbrev(context)
             local seg = not context.composition:empty() and context.composition:back()
             if seg then
                 seg.prompt = env.tips or kDefaultTips
             end
-        elseif context:get_property(property) ~= "" then
-            context:set_property(property, "")
+        else
+            restore_abbrev(context)
+            if context:get_property(property) ~= "" then
+                context:set_property(property, "")
+            end
         end
     end)
 end
@@ -432,6 +461,7 @@ function M.editor.func(key, env)
 
     -- 1. 取消键
     if repr == "Escape" then
+        restore_abbrev(ctx)
         ctx:clear()
         return kAccepted
     end
@@ -442,6 +472,7 @@ function M.editor.func(key, env)
         -- A. 尚未开始检字（仅有单独大写 O）：回车直接上屏大写 O
         if #components == 0 and pending == "" then
             env.engine:commit_text(env.prefix)
+            restore_abbrev(ctx)
             ctx:clear()
             return kAccepted
         end
@@ -487,6 +518,7 @@ function M.editor.func(key, env)
             end
             ctx:pop_input(1)
         else
+            restore_abbrev(ctx)
             ctx:clear()
         end
         return kAccepted
@@ -552,6 +584,37 @@ function M.editor.func(key, env)
     end
 
     return kNoop
+end
+
+-------------------------------------------------------------------------------
+-- 5. Cleaner: 终极门禁过滤器（挂载于 filters 链末尾，兜底斩杀任何下游注入的二字词）
+-------------------------------------------------------------------------------
+M.cleaner = {}
+M.cleaner.init = configure
+function M.cleaner.func(input, env)
+    local ctx = env.engine.context
+    if not is_active(ctx, env.prefix) then
+        for cand in input:iter() do yield(cand) end
+        return
+    end
+
+    local seg = not ctx.composition:empty() and ctx.composition:back()
+    local is_component_stage = seg and seg:has_tag("hanzi_component")
+
+    for cand in input:iter() do
+        local typ = kind(cand)
+        if typ == "ids_search" or typ == "hanzi_result" then
+            yield(cand)
+        elseif is_component_stage then
+            -- 在部件输入阶段，终极守门：严格只放行单字，绝对杜绝任何下游可能残留或注入的二字词！
+            if (not seg or cand._end == seg._end) and cand.text and utf8.len(cand.text) == 1 and not cand.text:find("%s") then
+                cand.type = "hanzi_component"
+                yield(cand)
+            end
+        else
+            yield(cand)
+        end
+    end
 end
 
 return M

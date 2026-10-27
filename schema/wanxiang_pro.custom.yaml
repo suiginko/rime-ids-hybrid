@@ -112,6 +112,8 @@ patch:
 
   engine/segmentors/@before 0: lua_segmentor@*ids_hybrid_composer*segmentor
   engine/filters/@before 0: lua_filter@*ids_hybrid_composer*filter
+  engine/filters/+:
+    - lua_filter@*ids_hybrid_composer*cleaner
 
   # 挂接日文方案 (kagiroi: 大写 J 引导)
   recognizer/patterns/kagiroi: '^(?:J|\xE3\x81[\x81-\xBF]|\xE3\x82[\x80-\x9F]|\xE3\x83\xBC)(?:\xE3\x81[\x81-\xBF]|\xE3\x82[\x80-\x9F]|\xE3\x83\xBC|[a-z\-;A-Z])*$'
