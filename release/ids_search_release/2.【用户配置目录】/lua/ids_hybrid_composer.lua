@@ -427,6 +427,66 @@ function M.editor.fini(env)
     end
 end
 
+-- IDS 结构符定义 (供 IDS 描述提取使用)
+local IDS_OPS = {
+    ["⿰"] = true, ["⿱"] = true, ["⿲"] = true, ["⿳"] = true,
+    ["⿴"] = true, ["⿵"] = true, ["⿶"] = true, ["⿷"] = true,
+    ["⿸"] = true, ["⿹"] = true, ["⿺"] = true, ["⿻"] = true
+}
+
+-- 提取文本中各个字符的 IDS 描述结构 (如 "鼯" -> "⿰鼠吾")
+local function get_text_ids(text)
+    if not text or text == "" then return "" end
+    local results = {}
+    for _, c in utf8.codes(text) do
+        local ch = utf8.char(c)
+        local comment = search.get_comment(ch)
+        local ids_struct = ch
+        if comment and comment ~= "" then
+            for p in comment:gmatch("%S+") do
+                local has_op = false
+                for _, op_c in utf8.codes(p) do
+                    if IDS_OPS[utf8.char(op_c)] then
+                        has_op = true
+                        break
+                    end
+                end
+                if has_op then
+                    ids_struct = p
+                    break
+                end
+            end
+        end
+        table.insert(results, ids_struct)
+    end
+    return table.concat(results, " ")
+end
+
+-- 打开默认浏览器搜索字统网 (https://zi.tools/zi/<字>)
+local function open_zitools_for_candidate(text)
+    if not text or text == "" then return false end
+    local first_char = text
+    for _, c in utf8.codes(text) do
+        first_char = utf8.char(c)
+        break
+    end
+    local encoded = first_char:gsub("([^%w_%-%.~])", function(b)
+        return string.format("%%%02X", string.byte(b))
+    end)
+    local url = "https://zi.tools/zi/" .. encoded
+
+    -- Windows 下无黑框静默启动系统默认浏览器
+    local cmd = string.format('rundll32 url.dll,FileProtocolHandler "%s"', url)
+    local ok = os.execute(cmd)
+    if not ok then
+        -- Android 等系统兜底
+        pcall(function()
+            os.execute(string.format('am start -a android.intent.action.VIEW -d "%s"', url))
+        end)
+    end
+    return true
+end
+
 function M.editor.func(key, env)
     if key:release() then return kNoop end
 
@@ -455,6 +515,94 @@ function M.editor.func(key, env)
             end
         end
         return kNoop
+    end
+
+    -- 0.1 候选增强功能：按组合键上屏某个候选的 IDS 描述结构 或 用某个候选字打开浏览器搜索字统网
+    if ctx:has_menu() then
+        local is_ctrl = key:ctrl()
+        local is_alt = key:alt()
+        local is_shift = key:shift()
+
+        -- 判定是否为数字 1~6（或 Shift + 1~6）
+        local select_digit = nil
+        if repr:match("^[1-6]$") then
+            select_digit = tonumber(repr)
+        elseif repr:match("^[!@#$%^]$") then
+            local shift_digits = { ["!"]=1, ["@"]=2, ["#"]=3, ["$"]=4, ["%"]=5, ["^"]=6 }
+            select_digit = shift_digits[repr]
+        end
+
+        local function get_target_candidate(d)
+            if d and d >= 1 and d <= 6 then
+                local seg = not ctx.composition:empty() and ctx.composition:back()
+                if seg and seg.menu then
+                    local sel_index = seg.selected_index or 0
+                    local page_size = env.page_size or 5
+                    local page_start = math.floor(sel_index / page_size) * page_size
+                    local target_index = page_start + (d - 1)
+                    seg.menu:prepare(target_index + 1)
+                    if target_index < seg.menu:candidate_count() then
+                        local c = seg.menu:get_candidate_at(target_index)
+                        if c then return c end
+                    end
+                end
+            end
+            return ctx:get_selected_candidate()
+        end
+
+        -- 功能 1：按组合键上屏某个候选的 IDS 描述结构
+        -- 支持：Control+Return、Alt+Return、Alt+i / Alt+I、Control+Shift+I；或 Alt+1 ~ Alt+6 (针对指定候选)
+        local is_ids_action = false
+        local ids_digit = nil
+
+        if repr == "Control+Return" or (is_alt and repr == "Return")
+            or (is_alt and (repr == "i" or repr == "I"))
+            or (is_ctrl and is_shift and (repr == "I" or repr == "i")) then
+            is_ids_action = true
+            ids_digit = nil
+        elseif is_alt and not is_shift and not is_ctrl and select_digit then
+            is_ids_action = true
+            ids_digit = select_digit
+        end
+
+        if is_ids_action then
+            local target_cand = get_target_candidate(ids_digit)
+            if target_cand and target_cand.text and target_cand.text ~= "" then
+                local ids_text = get_text_ids(target_cand.text)
+                if ids_text ~= "" then
+                    env.engine:commit_text(ids_text)
+                    restore_abbrev(ctx)
+                    ctx:clear()
+                    return kAccepted
+                end
+            end
+        end
+
+        -- 功能 2：按组合键用某个候选字打开浏览器搜索字统网 (zi.tools)
+        -- 支持：Control+Shift+Return、Alt+z / Alt+Z、Control+Shift+Z；或 Alt+Shift+1 ~ 6、Control+Shift+1 ~ 6 (针对指定候选)
+        local is_zitools_action = false
+        local zitools_digit = nil
+
+        if repr == "Control+Shift+Return"
+            or (is_alt and (repr == "z" or repr == "Z"))
+            or (is_ctrl and is_shift and (repr == "Z" or repr == "z")) then
+            is_zitools_action = true
+            zitools_digit = nil
+        elseif (is_shift and select_digit and (is_alt or is_ctrl)) then
+            is_zitools_action = true
+            zitools_digit = select_digit
+        end
+
+        if is_zitools_action then
+            local target_cand = get_target_candidate(zitools_digit)
+            if target_cand and target_cand.text and target_cand.text ~= "" then
+                if open_zitools_for_candidate(target_cand.text) then
+                    restore_abbrev(ctx)
+                    ctx:clear()
+                    return kAccepted
+                end
+            end
+        end
     end
 
     if not is_active(ctx, env.prefix) then return kNoop end
