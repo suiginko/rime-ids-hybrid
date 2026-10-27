@@ -1,8 +1,12 @@
--- ids_hybrid_search.lua - 全量 10.4 万汉字部件倒排极速求交与元数据模块 (v4.2)
+-- ids_hybrid_search.lua - 全量 10.4 万汉字部件倒排极速求交与元数据模块 (v4.3)
 -- 架构升级：
--- 1. 彻底解耦：ids_dict.bin 与 ids_offset.bin 保持纯净（仅存汉字部件与标准全拼），零冗余硬编码；
--- 2. 动态双拼解码：运行时结合万象原生 input_method_type (flypy/zrm/mspy/sogou等)，在内存中动态将双拼编码转化为合法全拼；
--- 3. 极速消歧与位图倒排：利用 offsets 中的 400 个全拼合法音节表进行毫秒级自动消歧与交集检索。
+-- 1. [三大黄金排序准则]：
+--    - 准则 1：优先展示“用完所打部件”（零剩余未用部件）的字，多余部件严格降级；
+--    - 准则 2：部件消费与防虚假复用模型（如检索“沐木”，“木”被视作新加部件，单木字如湘/莯被扣除优先级）；
+--    - 准则 3：部件顺序正序优先（正序 > 逆序，如 沐木->淋 优先于 𣒑）；
+-- 2. 彻底解耦：ids_dict.bin 与 ids_offset.bin 保持纯净（仅存汉字部件与标准全拼），零冗余硬编码；
+-- 3. 动态双拼解码：运行时结合万象原生 input_method_type (flypy/zrm/mspy/sogou等)，在内存中动态将双拼编码转化为合法全拼；
+-- 4. 极速消歧与位图倒排：利用 offsets 中的 400 个全拼合法音节表进行毫秒级自动消歧与交集检索。
 
 local M = {}
 
@@ -13,6 +17,48 @@ local info_file = nil
 local info_idx_file = nil
 
 local loaded = false
+
+-- IDS 结构符定义
+local IDS_OPS = {
+    ["⿰"] = true, ["⿱"] = true, ["⿲"] = true, ["⿳"] = true,
+    ["⿴"] = true, ["⿵"] = true, ["⿶"] = true, ["⿷"] = true,
+    ["⿸"] = true, ["⿹"] = true, ["⿺"] = true, ["⿻"] = true
+}
+
+-- 等价部首归一化映射 (水->氵, 人->亻, 火->灬 等)
+local COMP_ALIASES = {
+    ["水"] = "氵", ["⺡"] = "氵", ["氺"] = "氵",
+    ["火"] = "灬", ["⺣"] = "灬",
+    ["人"] = "亻", ["𠆢"] = "亻", ["⺅"] = "亻",
+    ["手"] = "扌", ["龵"] = "扌",
+    ["心"] = "忄", ["⺖"] = "忄", ["⺗"] = "忄",
+    ["肉"] = "月", ["⺼"] = "月", ["⺝"] = "月",
+    ["艸"] = "艹", ["⺾"] = "艹", ["⻀"] = "艹",
+    ["示"] = "礻", ["⺬"] = "礻",
+    ["衣"] = "衤", ["⺭"] = "衤", ["𧘇"] = "衤",
+    ["金"] = "钅", ["釒"] = "钅", ["⻐"] = "钅",
+    ["犬"] = "犭", ["⺲"] = "犭",
+    ["辵"] = "辶", ["⻌"] = "辶", ["⻍"] = "辶",
+    ["阜"] = "阝", ["邑"] = "阝", ["⻖"] = "阝", ["⻗"] = "阝",
+}
+
+-- 基础原子部首表 (无需再拆到笔画)
+local ATOMIC_COMPS = {
+    ["木"]=true, ["氵"]=true, ["水"]=true, ["火"]=true, ["灬"]=true, ["土"]=true, ["金"]=true, ["钅"]=true,
+    ["日"]=true, ["月"]=true, ["目"]=true, ["口"]=true, ["人"]=true, ["亻"]=true, ["手"]=true, ["扌"]=true,
+    ["心"]=true, ["忄"]=true, ["女"]=true, ["子"]=true, ["艹"]=true, ["言"]=true, ["讠"]=true, ["石"]=true,
+    ["田"]=true, ["山"]=true, ["刀"]=true, ["刂"]=true, ["力"]=true, ["又"]=true, ["十"]=true, ["大"]=true,
+    ["小"]=true, ["工"]=true, ["弓"]=true, ["广"]=true, ["门"]=true, ["马"]=true, ["鸟"]=true, ["鱼"]=true,
+    ["虫"]=true, ["犭"]=true, ["犬"]=true, ["辶"]=true, ["宀"]=true, ["冖"]=true, ["穴"]=true, ["竹"]=true,
+    ["⺮"]=true, ["米"]=true, ["糸"]=true, ["纟"]=true, ["车"]=true, ["足"]=true, ["⻊"]=true, ["雨"]=true,
+    ["页"]=true, ["酉"]=true, ["贝"]=true, ["走"]=true, ["身"]=true, ["辛"]=true, ["辰"]=true, ["邑"]=true,
+    ["阝"]=true, ["阜"]=true, ["方"]=true, ["斤"]=true, ["止"]=true, ["歹"]=true, ["殳"]=true, ["毛"]=true,
+    ["氏"]=true, ["气"]=true, ["白"]=true, ["皮"]=true, ["皿"]=true, ["矢"]=true, ["示"]=true, ["礻"]=true,
+    ["禾"]=true, ["立"]=true, ["羽"]=true, ["舟"]=true, ["艮"]=true, ["见"]=true, ["角"]=true, ["谷"]=true,
+    ["豆"]=true, ["豕"]=true, ["豸"]=true, ["赤"]=true, ["革"]=true, ["音"]=true, ["风"]=true, ["飞"]=true,
+    ["食"]=true, ["饣"]=true, ["首"]=true, ["香"]=true, ["骨"]=true, ["鬼"]=true, ["黾"]=true, ["鼎"]=true,
+    ["鼓"]=true, ["鼠"]=true, ["鼻"]=true, ["齐"]=true, ["齿"]=true, ["龙"]=true, ["龟"]=true,
+}
 
 -- 零声母表 (小鹤/自然码/微软等主流双拼)
 local ZERO_VOWELS = {
@@ -170,6 +216,220 @@ function M.get_comment(ch)
     return comment or ""
 end
 
+-- 解析单个字符的 IDS 注释信息 (获取 ids_str, block, leaves)
+local function parse_char_info(ch)
+    local comment = M.get_comment(ch)
+    if not comment or comment == "" then
+        return { ids = "", block = "", leaves = {ch} }
+    end
+    
+    local ids_str = ""
+    local block = ""
+    for p in comment:gmatch("%S+") do
+        local has_op = false
+        for _, c in utf8.codes(p) do
+            if IDS_OPS[utf8.char(c)] then
+                has_op = true
+                break
+            end
+        end
+        if has_op then
+            ids_str = p
+        elseif p == "基本" or p:match("^扩[A-J]$") or p == "兼容区" then
+            block = p
+        end
+    end
+    
+    local leaves = {}
+    if ids_str ~= "" then
+        for _, c in utf8.codes(ids_str) do
+            local char_c = utf8.char(c)
+            if not IDS_OPS[char_c] then
+                table.insert(leaves, COMP_ALIASES[char_c] or char_c)
+            end
+        end
+    end
+    if #leaves == 0 then
+        table.insert(leaves, COMP_ALIASES[ch] or ch)
+    end
+    
+    return { ids = ids_str, block = block, leaves = leaves }
+end
+
+-- 递归展开原子部件 (遇到常用部首或深度超过2层时停止)
+local function get_atomic_decomposition(ch, cache, depth)
+    ch = COMP_ALIASES[ch] or ch
+    if cache and cache[ch] then
+        return cache[ch]
+    end
+    depth = depth or 0
+    if depth > 2 or ATOMIC_COMPS[ch] then
+        local r = { ch }
+        if cache then cache[ch] = r end
+        return r
+    end
+    
+    local info = parse_char_info(ch)
+    local leaves = info.leaves
+    if #leaves <= 1 then
+        local r = { ch }
+        if cache then cache[ch] = r end
+        return r
+    end
+    
+    local res = {}
+    for _, c in ipairs(leaves) do
+        if c == ch then
+            table.insert(res, c)
+        else
+            local sub = get_atomic_decomposition(c, cache, depth + 1)
+            for _, sc in ipairs(sub) do
+                table.insert(res, sc)
+            end
+        end
+    end
+    if cache then cache[ch] = res end
+    return res
+end
+
+-- 三大黄金准则打分排序算法
+local function rank_candidates(cands, components)
+    if not cands or #cands <= 1 or not components or #components == 0 then
+        return cands
+    end
+
+    local cache = {}
+    local user_atomics = {}
+    local user_atomic_seq = {}
+    local norm_input_comps = {}
+
+    for _, c in ipairs(components) do
+        local norm_c = COMP_ALIASES[c] or c
+        table.insert(norm_input_comps, norm_c)
+        local atomics = get_atomic_decomposition(norm_c, cache, 0)
+        for _, a in ipairs(atomics) do
+            user_atomics[a] = (user_atomics[a] or 0) + 1
+            table.insert(user_atomic_seq, a)
+        end
+    end
+
+    local limit = math.min(#cands, 500)
+    local scored = {}
+
+    for i = 1, limit do
+        local ch = cands[i]
+        local info = parse_char_info(ch)
+        local cand_leaves = info.leaves
+        local cand_atomics_list = get_atomic_decomposition(ch, cache, 0)
+        
+        local cand_atomics = {}
+        for _, a in ipairs(cand_atomics_list) do
+            cand_atomics[a] = (cand_atomics[a] or 0) + 1
+        end
+
+        -- 准则 2：部件满足度检查与新增部件数量门禁 (防虚假复用)
+        local satisfied = true
+        local missing_count = 0
+        for a, req_count in pairs(user_atomics) do
+            local avail = cand_atomics[a] or 0
+            if avail < req_count then
+                satisfied = false
+                missing_count = missing_count + (req_count - avail)
+            end
+        end
+
+        -- 准则 1：零剩余部件度量 (是否恰好用完所打部件)
+        local extra_count = 0
+        for a, avail in pairs(cand_atomics) do
+            local req = user_atomics[a] or 0
+            if avail > req then
+                extra_count = extra_count + (avail - req)
+            end
+        end
+
+        -- 准则 3：部件顺序一致性 (正序优先于逆序)
+        local ordered_bonus = 0
+        local match_macro = (#cand_leaves == #norm_input_comps)
+        if match_macro then
+            for idx = 1, #norm_input_comps do
+                if cand_leaves[idx] ~= norm_input_comps[idx] then
+                    match_macro = false
+                    break
+                end
+            end
+        end
+
+        local match_macro_rev = false
+        if not match_macro and (#cand_leaves == #norm_input_comps) then
+            match_macro_rev = true
+            local n = #norm_input_comps
+            for idx = 1, n do
+                if cand_leaves[idx] ~= norm_input_comps[n - idx + 1] then
+                    match_macro_rev = false
+                    break
+                end
+            end
+        end
+
+        if match_macro then
+            ordered_bonus = 20000000
+        elseif match_macro_rev then
+            ordered_bonus = 10000000
+        else
+            -- 原子部件出现顺序比对
+            if #user_atomic_seq == #cand_atomics_list then
+                local seq_match = true
+                for idx = 1, #user_atomic_seq do
+                    if user_atomic_seq[idx] ~= cand_atomics_list[idx] then
+                        seq_match = false
+                        break
+                    end
+                end
+                if seq_match then
+                    ordered_bonus = 15000000
+                end
+            end
+        end
+
+        -- 分层打分
+        local score = 0
+        if satisfied then
+            if extra_count == 0 then
+                score = 50000000 + ordered_bonus
+            else
+                score = 20000000 - extra_count * 500000 + math.floor(ordered_bonus / 2)
+            end
+        else
+            score = - missing_count * 5000000 - extra_count * 500000
+        end
+
+        -- 分区加权：基本区常用字加权置顶
+        if info.block == "基本" then
+            score = score + 2000000
+        elseif info.block == "扩A" then
+            score = score + 1000000
+        end
+
+        table.insert(scored, { ch = ch, score = score, index = i })
+    end
+
+    table.sort(scored, function(a, b)
+        if a.score ~= b.score then
+            return a.score > b.score
+        end
+        return a.index < b.index
+    end)
+
+    local res = {}
+    for _, item in ipairs(scored) do
+        table.insert(res, item.ch)
+    end
+    for i = limit + 1, #cands do
+        table.insert(res, cands[i])
+    end
+    return res
+end
+
 -- 获取单个 key 对应的全部汉字列表 (支持 '火' 或 '火*2')
 local function get_key_chars(key)
     if not loaded or not dict_file then return {} end
@@ -260,13 +520,18 @@ function M.find(components, im_type)
         set = next_set
     end
 
-    -- 6. 保留交集并返回
+    -- 6. 保留交集
     local results = {}
     for _, ch in ipairs(first) do
         if set[ch] then
             table.insert(results, ch)
             set[ch] = nil
         end
+    end
+
+    -- 7. 黄金排序：三大准则打分（用完所打部件置顶 > 防虚假复用 > 正序优先）
+    if #results > 1 and #normalized_comps > 0 then
+        results = rank_candidates(results, normalized_comps)
     end
 
     return results
