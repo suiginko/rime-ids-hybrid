@@ -518,49 +518,65 @@ function M.editor.func(key, env)
     end
 
     -- 0.1 候选增强功能：按组合键上屏某个候选的 IDS 描述结构 或 用某个候选字打开浏览器搜索字统网
-    if ctx:has_menu() then
-        local is_ctrl = key:ctrl()
-        local is_alt = key:alt()
-        local is_shift = key:shift()
+    local has_menu = ctx:has_menu() or ctx:is_composing() or (not ctx.composition:empty())
+    if has_menu then
+        local is_ctrl = key:ctrl() or (repr:find("Control") ~= nil) or (repr:find("Ctrl") ~= nil)
+        local is_alt = key:alt() or (repr:find("Alt") ~= nil)
+        local is_shift = key:shift() or (repr:find("Shift") ~= nil)
+        local is_return = (code == 0xff0d or code == 0x0d or repr:find("Return") ~= nil)
 
-        -- 判定是否为数字 1~6（或 Shift + 1~6）
+        -- 判定是否为数字 1~6（通过 keycode 与 repr 双重容错判定）
         local select_digit = nil
-        if repr:match("^[1-6]$") then
-            select_digit = tonumber(repr)
-        elseif repr:match("^[!@#$%^]$") then
-            local shift_digits = { ["!"]=1, ["@"]=2, ["#"]=3, ["$"]=4, ["%"]=5, ["^"]=6 }
-            select_digit = shift_digits[repr]
+        if code >= 0x31 and code <= 0x36 then
+            select_digit = code - 0x31 + 1
+        elseif repr:find("[!1]") then
+            select_digit = 1
+        elseif repr:find("[@2]") then
+            select_digit = 2
+        elseif repr:find("[#3]") then
+            select_digit = 3
+        elseif repr:find("[$4]") then
+            select_digit = 4
+        elseif repr:find("[%%5]") then
+            select_digit = 5
+        elseif repr:find("[%^6]") then
+            select_digit = 6
         end
 
         local function get_target_candidate(d)
-            if d and d >= 1 and d <= 6 then
-                local seg = not ctx.composition:empty() and ctx.composition:back()
-                if seg and seg.menu then
-                    local sel_index = seg.selected_index or 0
-                    local page_size = env.page_size or 5
-                    local page_start = math.floor(sel_index / page_size) * page_size
-                    local target_index = page_start + (d - 1)
-                    seg.menu:prepare(target_index + 1)
-                    if target_index < seg.menu:candidate_count() then
-                        local c = seg.menu:get_candidate_at(target_index)
-                        if c then return c end
-                    end
+            local seg = not ctx.composition:empty() and ctx.composition:back()
+            if not seg then return ctx:get_selected_candidate() end
+
+            local sel_index = seg.selected_index or 0
+            local page_size = env.page_size or 5
+            local page_start = math.floor(sel_index / page_size) * page_size
+            local target_index = d and (page_start + d - 1) or sel_index
+
+            if seg.menu then
+                seg.menu:prepare(target_index + 1)
+                if target_index < seg.menu:candidate_count() then
+                    local c = seg.menu:get_candidate_at(target_index)
+                    if c then return c end
                 end
             end
-            return ctx:get_selected_candidate()
+            return seg:get_selected_candidate() or ctx:get_selected_candidate()
         end
 
         -- 功能 1：按组合键上屏某个候选的 IDS 描述结构
-        -- 支持：Control+Return、Alt+Return、Alt+i / Alt+I、Control+Shift+I；或 Alt+1 ~ Alt+6 (针对指定候选)
+        -- 快捷键支持：
+        -- 1. Control+Return、Alt+Return、Alt+i / Alt+I、Control+Shift+I (当前高亮候选)
+        -- 2. Control+1 ~ 6、Alt+1 ~ 6 (指定序号候选)
         local is_ids_action = false
         local ids_digit = nil
 
-        if repr == "Control+Return" or (is_alt and repr == "Return")
-            or (is_alt and (repr == "i" or repr == "I"))
-            or (is_ctrl and is_shift and (repr == "I" or repr == "i")) then
+        if (is_ctrl and not is_shift and is_return)
+            or (is_alt and not is_shift and is_return)
+            or (is_alt and (code == 0x69 or code == 0x49 or repr:find("[iI]") ~= nil))
+            or (is_ctrl and is_shift and (code == 0x69 or code == 0x49 or repr:find("[iI]") ~= nil)) then
             is_ids_action = true
             ids_digit = nil
-        elseif is_alt and not is_shift and not is_ctrl and select_digit then
+        elseif (is_ctrl and not is_shift and not is_alt and select_digit)
+            or (is_alt and not is_shift and not is_ctrl and select_digit) then
             is_ids_action = true
             ids_digit = select_digit
         end
@@ -579,16 +595,18 @@ function M.editor.func(key, env)
         end
 
         -- 功能 2：按组合键用某个候选字打开浏览器搜索字统网 (zi.tools)
-        -- 支持：Control+Shift+Return、Alt+z / Alt+Z、Control+Shift+Z；或 Alt+Shift+1 ~ 6、Control+Shift+1 ~ 6 (针对指定候选)
+        -- 快捷键支持：
+        -- 1. Control+Shift+Return、Alt+z / Alt+Z、Control+Shift+Z (当前高亮候选)
+        -- 2. Control+Shift+1 ~ 6、Alt+Shift+1 ~ 6 (指定序号候选)
         local is_zitools_action = false
         local zitools_digit = nil
 
-        if repr == "Control+Shift+Return"
-            or (is_alt and (repr == "z" or repr == "Z"))
-            or (is_ctrl and is_shift and (repr == "Z" or repr == "z")) then
+        if (is_ctrl and is_shift and is_return)
+            or (is_alt and (code == 0x7a or code == 0x5a or repr:find("[zZ]") ~= nil))
+            or (is_ctrl and is_shift and (code == 0x7a or code == 0x5a or repr:find("[zZ]") ~= nil)) then
             is_zitools_action = true
             zitools_digit = nil
-        elseif (is_shift and select_digit and (is_alt or is_ctrl)) then
+        elseif (is_shift and select_digit and (is_ctrl or is_alt)) then
             is_zitools_action = true
             zitools_digit = select_digit
         end
