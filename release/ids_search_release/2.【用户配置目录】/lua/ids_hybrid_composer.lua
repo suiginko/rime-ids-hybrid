@@ -462,40 +462,6 @@ local function get_text_ids(text)
     return table.concat(results, " ")
 end
 
--- 打开默认浏览器搜索字统网 (https://zi.tools/zi/<字>)
-local function open_zitools_for_candidate(text)
-    if not text or text == "" then return false end
-    local first_char = text
-    for _, c in utf8.codes(text) do
-        first_char = utf8.char(c)
-        break
-    end
-    local encoded = first_char:gsub("([^%w_%-%.~])", function(b)
-        return string.format("%%%02X", string.byte(b))
-    end)
-    local url = "https://zi.tools/zi/" .. encoded
-
-    -- 调试日志记录
-    pcall(function()
-        local lf = io.open("C:/Users/Hg/AppData/Roaming/Rime/zitools_debug.log", "a")
-        if lf then
-            lf:write(string.format("[%s] open_zitools: char=%s url=%s\n", os.date("%Y-%m-%d %H:%M:%S"), first_char, url))
-            lf:close()
-        end
-    end)
-
-    -- Windows 下纯 GUI 静默直调默认浏览器，彻底消灭控制台黑框闪烁：
-    -- 利用 mshta 的 WScript.Shell.Run 直接交由 Windows Shell 处理，0.00 秒黑框，绝对纯净！
-    local silent_cmd = string.format('mshta vbscript:createobject("wscript.shell").run("%s",1,false)(window.close)', url)
-    local ok = os.execute(silent_cmd)
-    if not ok then
-        -- 备用兜底
-        os.execute(string.format('cmd.exe /c start "" "%s"', url))
-    end
-
-    return true
-end
-
 function M.editor.func(key, env)
     if key:release() then return kNoop end
 
@@ -526,20 +492,8 @@ function M.editor.func(key, env)
         return kNoop
     end
 
-    -- 0.1 候选增强功能：按组合键上屏某个候选的 IDS 描述结构 或 用某个候选字打开浏览器搜索字统网
+    -- 0.1 候选增强功能：按组合键上屏某个候选的 IDS 描述结构 (如 鼯 -> ⿰鼠吾)
     local has_menu = ctx:has_menu() or ctx:is_composing() or (not ctx.composition:empty())
-
-    if (key:ctrl() or key:alt() or repr:find("Control") or repr:find("Alt")) and has_menu then
-        pcall(function()
-            local kf = io.open("C:/Users/Hg/AppData/Roaming/Rime/key_debug.log", "a")
-            if kf then
-                kf:write(string.format("[%s] repr=%s code=0x%x ctrl=%s alt=%s shift=%s\n",
-                    os.date("%Y-%m-%d %H:%M:%S"), repr, code, tostring(key:ctrl()), tostring(key:alt()), tostring(key:shift())))
-                kf:close()
-            end
-        end)
-    end
-
     if has_menu then
         local is_ctrl = key:ctrl() or (repr:find("Control") ~= nil) or (repr:find("Ctrl") ~= nil)
         local is_alt = key:alt() or (repr:find("Alt") ~= nil)
@@ -608,41 +562,6 @@ function M.editor.func(key, env)
                 local ids_text = get_text_ids(target_cand.text)
                 if ids_text ~= "" then
                     env.engine:commit_text(ids_text)
-                    restore_abbrev(ctx)
-                    ctx:clear()
-                    return kAccepted
-                end
-            end
-        end
-
-        -- 功能 2：按组合键用某个候选字打开浏览器搜索字统网 (zi.tools)
-        -- 快捷键支持：
-        -- 1. Control+o / Control+O (Open，最顺手无冲突！)
-        -- 2. Control+Alt+Return、Control+Shift+Return、Alt+z / Alt+Z、Control+Shift+Z (当前高亮候选)
-        -- 3. Control+Alt+1 ~ 6、Control+Shift+1 ~ 6、Alt+Shift+1 ~ 6 (指定序号候选)
-        local is_zitools_action = false
-        local zitools_digit = nil
-
-        local is_o_key = (code == 0x6f or code == 0x4f or repr:find("[oO]") ~= nil)
-        local is_z_key = (code == 0x7a or code == 0x5a or repr:find("[zZ]") ~= nil)
-
-        if (is_ctrl and not is_alt and not is_shift and is_o_key)
-            or (is_ctrl and is_alt and is_return)
-            or (is_ctrl and is_shift and is_return)
-            or (is_alt and not is_ctrl and is_z_key)
-            or (is_ctrl and is_shift and is_z_key) then
-            is_zitools_action = true
-            zitools_digit = nil
-        elseif (is_ctrl and is_alt and select_digit)
-            or (is_shift and select_digit and (is_ctrl or is_alt)) then
-            is_zitools_action = true
-            zitools_digit = select_digit
-        end
-
-        if is_zitools_action then
-            local target_cand = get_target_candidate(zitools_digit)
-            if target_cand and target_cand.text and target_cand.text ~= "" then
-                if open_zitools_for_candidate(target_cand.text) then
                     restore_abbrev(ctx)
                     ctx:clear()
                     return kAccepted
