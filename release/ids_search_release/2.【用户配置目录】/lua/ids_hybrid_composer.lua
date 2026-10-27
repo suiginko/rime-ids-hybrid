@@ -221,14 +221,14 @@ function M.translator.func(_, seg, env)
     if (pending == "" or pending == "-") and #components > 0 then
         local im_type = get_im_type(env)
         local results = search.find(components, im_type)
-        local preedit_str = (pending == "-") and "\t-" or "\t"
+        local preedit_str = (pending == "-") and "-\t" or "\t"
         for _, text in ipairs(results) do
             local comment = search.get_comment(text)
             -- 采用 ids_search 原生类型，获得万象全套 filter 最高级直接放行通道，杜绝注释篡改
             local cand = Candidate("ids_search", seg.start, seg._end, text, comment)
             -- 核心：利用 librime composition 内部 \t (caret_placeholder) 原生特性：
             -- 1. \t 置于首位使得 preedit.sel_start == preedit.sel_end，小狼毫判定高亮范围为零，彻底消灭残留黑块；
-            -- 2. 预编辑文本追加为空（刚按减号时通过 "\t-" 保证减号可见且无黑框），候选窗口平滑常驻，杜绝突变闪退！
+            -- 2. 预编辑文本追加为空（刚按减号时通过 "-\t" 让减号自然紧随前置部件，位于提示语左侧），候选窗口平滑常驻，杜绝突变闪退！
             cand.preedit = preedit_str
             yield(cand)
         end
