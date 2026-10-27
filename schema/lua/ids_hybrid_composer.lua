@@ -167,11 +167,22 @@ function M.segmentor.func(segmentation, env)
     else
         -- 处于字母或部件编码段
         local next_quote = input:find("'", start + 1)
-        if input:sub(start + 1, start + 1) == "-" and start + 1 < #input and (not next_quote or next_quote > start + 2) then
-            -- 减法前缀段：将 "-" 独立确认为符号段，让后面的拼音 (如 ren) 纯净流入万象主词库
-            seg = Segment(start, start + 1)
-            seg.status = "kConfirmed"
-            seg.tags = Set({"phony"})
+        if input:sub(start + 1, start + 1) == "-" then
+            if start + 1 < #input and (not next_quote or next_quote > start + 2) then
+                -- 减法前缀段（减号后已有编码，如 -ren）：将 "-" 独立确认为可见符号段，让后续拼音纯净流入万象主词库，并在编码栏显式呈现减号！
+                seg = Segment(start, start + 1)
+                seg.status = "kConfirmed"
+                seg.tags = Set({"confirmed_component"})
+            elseif start + 1 == #input then
+                -- 刚敲入减号，等待后续部件编码：状态设为 kGuess，标签设为 confirmed_component，在 preedit 编码行显式显示减号！
+                seg = Segment(start, #input)
+                seg.status = "kGuess"
+                seg.tags = Set({"confirmed_component"})
+            else
+                seg = Segment(start, start + 1)
+                seg.status = "kConfirmed"
+                seg.tags = Set({"confirmed_component"})
+            end
         elseif next_quote then
             seg = Segment(start, next_quote - 1)
             seg.status = "kConfirmed"
