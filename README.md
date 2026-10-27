@@ -43,3 +43,11 @@
 - 灵韵输入法原生内置检字支持；
 - 将 `ids_data.bin` 放入手机方案目录（`Documents/LyraIME/<方案包名>/`）及其 `build/` 目录；
 - 在灵韵输入法设置中点击【重新部署】即可。
+
+---
+
+## 致谢 (Acknowledgments)
+
+- **[@Carlson24](https://github.com/Carlson24)**：[librime-ids-search](https://github.com/Carlson24/librime-ids-search)（C++ 原生部件检字插件与 IDS3 架构）
+- **[@ksqsf](https://github.com/ksqsf)**：[rimeinn/hanzi-search](https://github.com/rimeinn/hanzi-search)（Rime 部件检字挂接方案）
+

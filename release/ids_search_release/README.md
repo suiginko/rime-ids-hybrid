@@ -39,3 +39,11 @@
 2. **复制核心文件**：打开 `1.【小狼毫程序目录】`，将 `rime.dll` 复制覆盖到小狼毫安装目录（通常为 `C:\Program Files\Rime\weasel-0.17.4\`）；
 3. **复制配置文件**：打开 `2.【用户配置目录】`，将里面所有文件复制到小狼毫用户目录（`%APPDATA%\Rime\`）；
 4. **重新部署**：右键托盘图标 $\to$ 点击【重新部署】完成。
+
+---
+
+## 致谢 (Acknowledgments)
+
+- **[@Carlson24](https://github.com/Carlson24)**：[librime-ids-search](https://github.com/Carlson24/librime-ids-search)（C++ 原生部件检字插件与 IDS3 架构）
+- **[@ksqsf](https://github.com/ksqsf)**：[rimeinn/hanzi-search](https://github.com/rimeinn/hanzi-search)（Rime 部件检字挂接方案）
+
