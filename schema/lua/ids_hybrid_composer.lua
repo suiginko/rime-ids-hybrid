@@ -167,7 +167,12 @@ function M.segmentor.func(segmentation, env)
     else
         -- 处于字母或部件编码段
         local next_quote = input:find("'", start + 1)
-        if next_quote then
+        if input:sub(start + 1, start + 1) == "-" and start + 1 < #input and (not next_quote or next_quote > start + 2) then
+            -- 减法前缀段：将 "-" 独立确认为符号段，让后面的拼音 (如 ren) 纯净流入万象主词库
+            seg = Segment(start, start + 1)
+            seg.status = "kConfirmed"
+            seg.tags = Set({"phony"})
+        elseif next_quote then
             seg = Segment(start, next_quote - 1)
             seg.status = "kConfirmed"
             seg.tags = Set({"confirmed_component"})
@@ -397,7 +402,11 @@ function M.editor.init(env)
             restore_abbrev(context)
         else
             local components, codes, pending = state(context, env.prefix)
-            components[#components + 1] = selected.component
+            local comp_text = selected.component
+            if pending:sub(1, 1) == "-" and not comp_text:match("^%-") then
+                comp_text = "-" .. comp_text
+            end
+            components[#components + 1] = comp_text
             codes[#codes + 1] = pending
             save(context, components, codes)
             -- 推入单引号分隔符，驱动新段并保留所有已选部件！
@@ -676,23 +685,27 @@ function M.editor.func(key, env)
         end
     end
 
-    -- 6. 字母输入：追加到输入串
-    if repr:match("^[a-z]$") then
+    -- 6. 字母与减号输入：追加到输入串 (支持佩-亻=𫥞减法检字)
+    if repr:match("^[a-z]$") or repr == "minus" or repr == "-" or code == 0x2d then
+        local char_to_push = repr
+        if repr == "minus" or code == 0x2d then
+            char_to_push = "-"
+        end
         if ctx.caret_pos ~= #ctx.input then
             ctx.caret_pos = #ctx.input
         end
         if not ctx.composition:empty() and ctx.composition:back():has_tag(env.tag) then
             ctx:clear_non_confirmed_composition()
         end
-        ctx:push_input(repr)
+        ctx:push_input(char_to_push)
         return kAccepted
     end
 
-    -- 7. 翻页键与 7890 声调键放行
+    -- 7. 翻页键与 7890 声调键放行 (注：minus 已作为减法运算键，由逗号句号接管翻页)
     if repr:match("^[7890]$")
         or repr == "Up" or repr == "Down"
         or repr == "Page_Up" or repr == "Page_Down"
-        or repr == "comma" or repr == "period" or repr == "minus" or repr == "equal" then
+        or repr == "comma" or repr == "period" or repr == "equal" then
         return kNoop
     end
 

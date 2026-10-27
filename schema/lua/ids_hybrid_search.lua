@@ -447,13 +447,97 @@ local function get_key_chars(key)
     return chars
 end
 
--- 多部件求交 (自动按万象当前输入法类型动态转码并按频次合并如 火+火 -> 火*2，木+木+木 -> 木*3)
+-- 多部件求交与减法运算 (如 佩-亻=𫥞, 泰-氺=𡗗, 森-木=林)
 function M.find(components, im_type)
     if not components or #components == 0 then return {} end
 
+    -- 0. 减法功能支持：分离正向部件与减法部件 (如 "佩", "-亻" 或 "佩-亻")
+    local pos_comps = {}
+    local neg_comps = {}
+    local idx_comp = 1
+    while idx_comp <= #components do
+        local raw = components[idx_comp]:gsub("[\r\n\t ]", "")
+        if raw ~= "" then
+            if raw == "-" then
+                if idx_comp + 1 <= #components then
+                    table.insert(neg_comps, components[idx_comp + 1]:gsub("[\r\n\t ]", ""))
+                    idx_comp = idx_comp + 1
+                end
+            elseif raw:sub(1, 1) == "-" then
+                table.insert(neg_comps, raw:sub(2))
+            elseif raw:find("-", 1, true) then
+                for part in raw:gmatch("[^-]+") do
+                    if #pos_comps == 0 then
+                        table.insert(pos_comps, part)
+                    else
+                        table.insert(neg_comps, part)
+                    end
+                end
+            else
+                table.insert(pos_comps, raw)
+            end
+        end
+        idx_comp = idx_comp + 1
+    end
+
+    -- 若触发了减法模式 (包含需要去掉的部件)
+    if #neg_comps > 0 then
+        local sub_results = {}
+        local seen_sub = {}
+
+        -- 对 neg_comps 进行规范化与动态双拼转译
+        local norm_neg = {}
+        for _, n in ipairs(neg_comps) do
+            local dec_n = n
+            if #n == 2 and n:match("^%a%a$") then
+                dec_n = decode_shuangpin(n, im_type)
+            end
+            table.insert(norm_neg, COMP_ALIASES[dec_n] or dec_n)
+        end
+
+        -- 阶段 1：直接子结构精确扣除 (如 佩 - 亻 = 𫥞, 泰 - 氺 = 𡗗, 森 - 木 = 林, 休 - 亻 = 木)
+        for _, p in ipairs(pos_comps) do
+            local info = parse_char_info(p)
+            local leaves = {}
+            for _, l in ipairs(info.leaves) do
+                table.insert(leaves, l)
+            end
+            local matched_count = 0
+            local remains = {}
+            local used_neg = {}
+            for _, leaf in ipairs(leaves) do
+                local norm_leaf = COMP_ALIASES[leaf] or leaf
+                local found = false
+                for idx, neg in ipairs(norm_neg) do
+                    if not used_neg[idx] and (neg == norm_leaf or neg == leaf) then
+                        used_neg[idx] = true
+                        matched_count = matched_count + 1
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    table.insert(remains, leaf)
+                end
+            end
+
+            if matched_count == #norm_neg and #remains == 1 then
+                local hit = remains[1]
+                if not seen_sub[hit] then
+                    table.insert(sub_results, hit)
+                    seen_sub[hit] = true
+                end
+            end
+        end
+
+        if #sub_results > 0 then
+            return sub_results
+        end
+    end
+
     -- 1. 规范化处理与动态双拼转译
     local normalized_comps = {}
-    for _, raw_comp in ipairs(components) do
+    for _, raw_comp in ipairs(pos_comps) do
         local comp = raw_comp:gsub("[\r\n\t ]", "")
         if comp ~= "" then
             -- 若已直接命中（如汉字部件或合法全拼），直接采用
