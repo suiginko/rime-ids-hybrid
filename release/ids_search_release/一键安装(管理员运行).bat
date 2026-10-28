@@ -77,10 +77,12 @@ if exist "!RIME_USER_DIR!\build\ids_meta.bin" del /F /Q "!RIME_USER_DIR!\build\i
 if exist "!RIME_USER_DIR!\ids_index.bin" del /F /Q "!RIME_USER_DIR!\ids_index.bin" >nul 2>&1
 if exist "!RIME_USER_DIR!\ids_meta.bin" del /F /Q "!RIME_USER_DIR!\ids_meta.bin" >nul 2>&1
 
-:: 部署 IDS3 单文件
+:: 部署 IDS3 单文件与 Lua 检字脚本
 copy /Y "2.【用户配置目录】\ids_data.bin" "!RIME_USER_DIR!\build\ids_data.bin" >nul
 copy /Y "2.【用户配置目录】\ids_data.bin" "!RIME_USER_DIR!\ids_data.bin" >nul
 copy /Y "2.【用户配置目录】\ids_search.schema.yaml" "!RIME_USER_DIR!\ids_search.schema.yaml" >nul
+if not exist "!RIME_USER_DIR!\lua" mkdir "!RIME_USER_DIR!\lua"
+xcopy /E /I /Y "2.【用户配置目录】\lua" "!RIME_USER_DIR!\lua" >nul
 
 if not exist "!RIME_USER_DIR!\ids_custom.txt" (
     copy /Y "2.【用户配置目录】\ids_custom.txt" "!RIME_USER_DIR!\ids_custom.txt" >nul

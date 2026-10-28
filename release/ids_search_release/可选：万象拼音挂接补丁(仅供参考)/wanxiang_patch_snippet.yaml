@@ -1,33 +1,42 @@
 # ==============================================================================
-# 万象拼音挂接部件检字 (librime-ids-search C++ 原生插件 IDS3 单文件架构) 片段
-# 若您已有自己的 wanxiang_pro.custom.yaml，请将以下内容追加合并至您的 patch 节点下：
+# 万象拼音挂接部件检字完整补丁片段
+# 支持：大写 O 混合部件加减法检字 + 大写 I 纯拼音原生极速检字
+# 若您已有自己的 wanxiang_pro.custom.yaml，请将以下内容追加合并至您的 patch: 节点下
 # ==============================================================================
 
 patch:
-  # 1. 依赖声明
-  schema/dependencies/+:
-    - ids_search
-
-  # 2. 挂接识别正则（大写 I 引导，排除数字选字与逗号/句号翻页）
-  recognizer/patterns/ids_search: '^I[^0-9,.;=\[\]\s-]*$'
-
-  # 3. 挂接分段器（在输入前缀 I 时，在输入条右侧即时显示〔ids检字〕提示）
+  # 1. 挂接交互处理器与分段器 (支持大写 O 检字、加减法中枢与 IDS 快捷键)
+  engine/processors/@before 0: lua_processor@*ids_hybrid_composer*editor
+  engine/segmentors/@before 0: lua_segmentor@*ids_hybrid_composer*segmentor
   engine/segmentors/@before 3: affix_segmentor@ids_search
+
+  # 2. 挂接翻译器 (注入原生 C++ 检字与 Lua 混合部件翻译器)
+  engine/translators/+:
+    - ids_search_translator@ids_trans                # 大写 I 模式：C++ 原生极速检字
+    - lua_translator@*ids_hybrid_composer*translator  # 大写 O 模式：混合部件加减法检字
+
+  # 3. 挂接过滤器 (部件单字保护与候选去重)
+  engine/filters/@before 0: lua_filter@*ids_hybrid_composer*filter
+  engine/filters/+:
+    - lua_filter@*ids_hybrid_composer*cleaner
+
+  # 4. 正则匹配模式 (大写 I / 大写 O)
+  recognizer/patterns/ids_search: '^I[^0-9,.;=\[\]\s-]*$'
+  recognizer/patterns/ids_search_hybrid: '^O.*$'
+
+  # 5. 大写 I 纯字母检字组件参数 (C++ 原生)
   ids_search:
     tag: ids_search
     prefix: "I"
-    tips: "〔ids检字〕"
+    tips: "〔部件检字〕"
+    reverse_hotkey: "Control+i"
 
-  # 4. 挂接原生 C++ 检字组件 (使用 ids_trans 独立命名空间杜绝前缀二次剥离冲突)
-  engine/translators/+:
-    - ids_search_translator@ids_trans
-
-  # 5. 检字组件参数配置 (IDS3 极速单文件架构)
   ids_trans: &ids_trans_conf
     data_file: build/ids_data.bin
     tag: ids_search
     prefix: ""              # 前缀已由 affix_segmentor 自动剥离
-    tips: "〔ids检字〕"
+    tips: "〔部件检字〕"
+    reverse_hotkey: "Control+i"
     max_results: 60
     shuangpin_scheme: flypy # 双拼方案：flypy(小鹤) 或 zrm(自然码)
     show_pinyin: true       # 候选注释中显示汉字读音
@@ -35,6 +44,21 @@ patch:
     show_unicode: true      # 候选注释中显示 Unicode 16进制编码
     show_block: true        # 候选注释中显示所属 Unicode 分区
     ids_format: unicode     # 结构符号格式: unicode(原生IDC符号) / plain(纯文字无方块) / bracket(文字标签)
+    custom_file: ids_custom.txt
+
+  # 6. 大写 O 混合部件检字组件参数 (交互式中枢)
+  ids_hybrid: &ids_hybrid_conf
+    data_file: build/ids_data.bin
+    tag: ids_search_hybrid
+    prefix: "O"
+    tips: "〔汉字部件检字〕"
+    max_results: 60
+    shuangpin_scheme: flypy
+    show_pinyin: true
+    show_ids: true
+    show_unicode: true
+    show_block: true
+    ids_format: unicode
     custom_file: ids_custom.txt
 
   # 兼容锚点
