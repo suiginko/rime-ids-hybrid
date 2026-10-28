@@ -447,37 +447,71 @@ local function get_key_chars(key)
     return chars
 end
 
--- 多部件求交与减法运算 (如 佩-亻=𫥞, 泰-氺=𡗗, 森-木=林)
+-- 多部件求交与加减代数运算 (如 佩-亻=𫥞, 佩-亻+木=𣑲, 泰-氺=𡗗, 森-木+氵=淋)
 function M.find(components, im_type)
     if not components or #components == 0 then return {} end
 
-    -- 0. 减法功能支持：分离正向部件与减法部件 (如 "佩", "-亻" 或 "佩-亻")
-    local pos_comps = {}
-    local neg_comps = {}
-    local idx_comp = 1
-    while idx_comp <= #components do
-        local raw = components[idx_comp]:gsub("[\r\n\t ]", "")
-        if raw ~= "" then
-            if raw == "-" then
-                if idx_comp + 1 <= #components then
-                    table.insert(neg_comps, components[idx_comp + 1]:gsub("[\r\n\t ]", ""))
-                    idx_comp = idx_comp + 1
-                end
-            elseif raw:sub(1, 1) == "-" then
-                table.insert(neg_comps, raw:sub(2))
-            elseif raw:find("-", 1, true) then
-                for part in raw:gmatch("[^-]+") do
-                    if #pos_comps == 0 then
-                        table.insert(pos_comps, part)
-                    else
-                        table.insert(neg_comps, part)
+    -- 0. 解析操作符序列：支持减法与加法连续代数运算
+    local tokens = {}
+    for _, raw_c in ipairs(components) do
+        local c = raw_c:gsub("[\r\n\t ]", "")
+        if c ~= "" then
+            local curr = ""
+            for i = 1, #c do
+                local ch = c:sub(i, i)
+                if ch == "+" or ch == "-" then
+                    if curr ~= "" then
+                        table.insert(tokens, curr)
+                        curr = ""
                     end
+                    table.insert(tokens, ch)
+                else
+                    curr = curr .. ch
                 end
-            else
-                table.insert(pos_comps, raw)
+            end
+            if curr ~= "" then
+                table.insert(tokens, curr)
             end
         end
-        idx_comp = idx_comp + 1
+    end
+
+    local base_pos = {}
+    local neg_comps = {}
+    local post_pos = {}
+    local stage = "base" -- "base" -> "neg" -> "post"
+    local curr_op = "+"
+
+    for _, t in ipairs(tokens) do
+        if t == "-" then
+            curr_op = "-"
+            if stage == "base" then
+                stage = "neg"
+            end
+        elseif t == "+" then
+            curr_op = "+"
+            if stage == "neg" then
+                stage = "post"
+            end
+        else
+            if curr_op == "-" then
+                table.insert(neg_comps, t)
+            else
+                if stage == "neg" then
+                    stage = "post"
+                    table.insert(post_pos, t)
+                elseif stage == "post" then
+                    table.insert(post_pos, t)
+                else
+                    table.insert(base_pos, t)
+                end
+            end
+            curr_op = "+"
+        end
+    end
+
+    local pos_comps = {}
+    for _, b in ipairs(base_pos) do
+        table.insert(pos_comps, b)
     end
 
     -- 若触发了减法模式 (包含需要去掉的部件)
@@ -496,7 +530,7 @@ function M.find(components, im_type)
         end
 
         -- 阶段 1：直接子结构精确扣除 (如 佩 - 亻 = 𫥞, 泰 - 氺 = 𡗗, 森 - 木 = 林, 休 - 亻 = 木)
-        for _, p in ipairs(pos_comps) do
+        for _, p in ipairs(base_pos) do
             local info = parse_char_info(p)
             local leaves = {}
             for _, l in ipairs(info.leaves) do
@@ -521,17 +555,28 @@ function M.find(components, im_type)
                 end
             end
 
-            if matched_count == #norm_neg and #remains == 1 then
-                local hit = remains[1]
-                if not seen_sub[hit] then
-                    table.insert(sub_results, hit)
-                    seen_sub[hit] = true
+            if matched_count == #norm_neg and #remains >= 1 then
+                for _, r in ipairs(remains) do
+                    if not seen_sub[r] then
+                        table.insert(sub_results, r)
+                        seen_sub[r] = true
+                    end
                 end
             end
         end
 
-        if #sub_results > 0 then
+        -- 若减法后无后续加法部件，直接返回扣除结果 (如 佩 - 亻 = 𫥞)
+        if #post_pos == 0 then
             return sub_results
+        end
+
+        -- 若有后续加法部件 (如 佩 - 亻 + 木)，将扣除剩余部件与加法部件合并为新查询项！
+        pos_comps = {}
+        for _, r in ipairs(sub_results) do
+            table.insert(pos_comps, r)
+        end
+        for _, p in ipairs(post_pos) do
+            table.insert(pos_comps, p)
         end
     end
 

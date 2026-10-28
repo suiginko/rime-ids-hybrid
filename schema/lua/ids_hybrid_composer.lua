@@ -167,16 +167,17 @@ function M.segmentor.func(segmentation, env)
     else
         -- 处于字母或部件编码段
         local next_quote = input:find("'", start + 1)
-        if input:sub(start + 1, start + 1) == "-" then
+        local first_char = input:sub(start + 1, start + 1)
+        if first_char == "-" or first_char == "+" then
             if start + 1 < #input and (not next_quote or next_quote > start + 2) then
-                -- 减法前缀段（减号后已有编码，如 -ren）：将 "-" 独立确认为可见符号段，让后续拼音纯净流入万象主词库，并在编码栏显式呈现减号！
+                -- 符号前缀段（符号后已有编码，如 -ren 或 +mu）：将符号独立确认为可见符号段，让后续拼音纯净流入万象主词库，并在编码栏显式呈现操作符！
                 seg = Segment(start, start + 1)
                 seg.status = "kConfirmed"
                 seg.tags = Set({"confirmed_component"})
             elseif start + 1 == #input then
-                -- 刚敲入减号，等待后续部件编码：
+                -- 刚敲入操作符，等待后续部件编码：
                 -- 核心门禁：严禁设置 seg.status = "kGuess"（否则 librime TranslateSegments 会直接跳过翻译导致候选消失！必须保持默认 kVoid）
-                -- 标签赋予 env.tag 和 ids_search，让 translator 能够为当前减号段继续输出前置候选！
+                -- 标签赋予 env.tag 和 ids_search，让 translator 能够为当前操作符段继续输出前置候选！
                 seg = Segment(start, #input)
                 seg.tags = Set({env.tag, "ids_search"})
             else
@@ -218,17 +219,17 @@ end
 function M.translator.func(_, seg, env)
     if not seg:has_tag(env.tag) then return end
     local components, _, pending = state(env.engine.context, env.prefix)
-    if (pending == "" or pending == "-") and #components > 0 then
+    if (pending == "" or pending == "-" or pending == "+") and #components > 0 then
         local im_type = get_im_type(env)
         local results = search.find(components, im_type)
-        local preedit_str = (pending == "-") and "-\t" or "\t"
+        local preedit_str = (pending == "-" and "-\t") or (pending == "+" and "+\t") or "\t"
         for _, text in ipairs(results) do
             local comment = search.get_comment(text)
             -- 采用 ids_search 原生类型，获得万象全套 filter 最高级直接放行通道，杜绝注释篡改
             local cand = Candidate("ids_search", seg.start, seg._end, text, comment)
             -- 核心：利用 librime composition 内部 \t (caret_placeholder) 原生特性：
             -- 1. \t 置于首位使得 preedit.sel_start == preedit.sel_end，小狼毫判定高亮范围为零，彻底消灭残留黑块；
-            -- 2. 预编辑文本追加为空（刚按减号时通过 "-\t" 让减号自然紧随前置部件，位于提示语左侧），候选窗口平滑常驻，杜绝突变闪退！
+            -- 2. 预编辑文本追加为空（刚按减号/加号时通过 "-\t" / "+\t" 让操作符自然紧随前置部件，位于提示语左侧），候选窗口平滑常驻，杜绝突变闪退！
             cand.preedit = preedit_str
             yield(cand)
         end
@@ -418,6 +419,8 @@ function M.editor.init(env)
             local comp_text = selected.component
             if pending:sub(1, 1) == "-" and not comp_text:match("^%-") then
                 comp_text = "-" .. comp_text
+            elseif pending:sub(1, 1) == "+" and not comp_text:match("^%+") then
+                comp_text = "+" .. comp_text
             end
             components[#components + 1] = comp_text
             codes[#codes + 1] = pending
@@ -611,8 +614,8 @@ function M.editor.func(key, env)
             ctx:clear()
             return kAccepted
         end
-        -- B. 正在输入部件编码（pending ~= "" 且不是单纯的 "-"）：回车直接将字母编码作为部件参与检字，不选首选字！
-        if pending ~= "" and pending ~= "-" then
+        -- B. 正在输入部件编码（pending ~= "" 且不是单纯的 "-" 或 "+"）：回车直接将字母编码作为部件参与检字，不选首选字！
+        if pending ~= "" and pending ~= "-" and pending ~= "+" then
             if not ctx.composition:empty() then
                 ctx.composition:pop_back()
             end
@@ -698,11 +701,26 @@ function M.editor.func(key, env)
         end
     end
 
-    -- 6. 字母与减号输入：追加到输入串 (支持佩-亻=𫥞减法检字)
-    if repr:match("^[a-z]$") or repr == "minus" or repr == "-" or code == 0x2d then
+    -- 6. 字母、减号与加号输入：追加到输入串 (支持佩-亻=𫥞减法与加法检字)
+    local is_ctrl = key:ctrl() or (repr:find("Control") ~= nil) or (repr:find("Ctrl") ~= nil)
+    local is_alt = key:alt() or (repr:find("Alt") ~= nil)
+    local is_shift = key:shift() or (repr:find("Shift") ~= nil)
+
+    local is_minus = not is_ctrl and not is_alt and (
+        repr == "minus" or repr == "-" or code == 0x2d
+    )
+    local is_plus = not is_ctrl and not is_alt and (
+        repr == "plus" or repr == "+" or code == 0x2b or
+        repr == "equal" or repr == "=" or code == 0x3d or
+        repr:find("plus") ~= nil or (is_shift and (repr:find("equal") ~= nil or code == 0x3d))
+    )
+
+    if repr:match("^[a-z]$") or is_minus or is_plus then
         local char_to_push = repr
-        if repr == "minus" or code == 0x2d then
+        if is_minus then
             char_to_push = "-"
+        elseif is_plus then
+            char_to_push = "+"
         end
         if ctx.caret_pos ~= #ctx.input then
             ctx.caret_pos = #ctx.input
@@ -714,11 +732,11 @@ function M.editor.func(key, env)
         return kAccepted
     end
 
-    -- 7. 翻页键与 7890 声调键放行 (注：minus 已作为减法运算键，由逗号句号接管翻页)
+    -- 7. 翻页键与 7890 声调键放行 (注：minus 与 equal 已作为加减法运算键，由逗号句号接管翻页)
     if repr:match("^[7890]$")
         or repr == "Up" or repr == "Down"
         or repr == "Page_Up" or repr == "Page_Down"
-        or repr == "comma" or repr == "period" or repr == "equal" then
+        or repr == "comma" or repr == "period" then
         return kNoop
     end
 
