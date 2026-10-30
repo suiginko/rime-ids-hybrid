@@ -447,154 +447,185 @@ local function get_key_chars(key)
     return chars
 end
 
--- 多部件求交与加减代数运算 (如 佩-亻=𫥞, 佩-亻+木=𣑲, 泰-氺=𡗗, 森-木+氵=淋)
+-- 递归扣除部件算法（支持多层级深层结构折叠展开，如 龍 - 立月 = 𳑳, 章 - 日十 = 立）
+local function subtract_character(base_char, neg_item, depth)
+    local norm_base = COMP_ALIASES[base_char] or base_char
+    if norm_base == neg_item then
+        return {}
+    end
+    depth = depth or 0
+    if depth > 3 or ATOMIC_COMPS[norm_base] then
+        return nil
+    end
+
+    local info = parse_char_info(base_char)
+    local leaves = {}
+    for _, x in ipairs(info.leaves) do
+        table.insert(leaves, COMP_ALIASES[x] or x)
+    end
+    if #leaves <= 1 and leaves[1] == norm_base then
+        return nil
+    end
+
+    -- 1. 直接叶子命中
+    for idx, l in ipairs(leaves) do
+        if l == neg_item then
+            table.remove(leaves, idx)
+            return leaves
+        end
+    end
+
+    -- 2. 递归深入复合子部件展开
+    local new_leaves = {}
+    local sub_done = false
+    for _, l in ipairs(info.leaves) do
+        local norm_l = COMP_ALIASES[l] or l
+        if not sub_done then
+            local sub_res = subtract_character(l, neg_item, depth + 1)
+            if sub_res ~= nil then
+                for _, r in ipairs(sub_res) do
+                    table.insert(new_leaves, r)
+                end
+                sub_done = true
+            else
+                table.insert(new_leaves, norm_l)
+            end
+        else
+            table.insert(new_leaves, norm_l)
+        end
+    end
+
+    if sub_done then
+        return new_leaves
+    end
+    return nil
+end
+
+local function apply_single_subtraction(current_comps, neg_item)
+    -- 优先从当前已有的复合字符中向下递归抠除
+    for i, c in ipairs(current_comps) do
+        local sub_res = subtract_character(c, neg_item, 0)
+        if sub_res ~= nil then
+            local new_comps = {}
+            for j = 1, i - 1 do
+                table.insert(new_comps, current_comps[j])
+            end
+            for _, r in ipairs(sub_res) do
+                table.insert(new_comps, r)
+            end
+            for j = i + 1, #current_comps do
+                table.insert(new_comps, current_comps[j])
+            end
+            return new_comps, true
+        end
+    end
+
+    -- 若无法从字内抠除，尝试从当前部件列表中字面剔除
+    for idx, c in ipairs(current_comps) do
+        if c == neg_item then
+            local new_comps = {}
+            for j = 1, #current_comps do
+                if j ~= idx then
+                    table.insert(new_comps, current_comps[j])
+                end
+            end
+            return new_comps, true
+        end
+    end
+
+    return current_comps, false
+end
+
+-- 多部件求交与加减代数运算 (如 佩-亻=𫥞, 龍-立月=𳑳, 佩-亻+木=𣑲, 泰-氺=𡗗, 森-木+氵=淋)
 function M.find(components, im_type)
     if not components or #components == 0 then return {} end
 
-    -- 0. 解析操作符序列：支持减法与加法连续代数运算
-    local tokens = {}
-    for _, raw_c in ipairs(components) do
-        local c = raw_c:gsub("[\r\n\t ]", "")
-        if c ~= "" then
-            local curr = ""
-            for i = 1, #c do
-                local ch = c:sub(i, i)
-                if ch == "+" or ch == "-" then
-                    if curr ~= "" then
-                        table.insert(tokens, curr)
-                        curr = ""
-                    end
-                    table.insert(tokens, ch)
-                else
-                    curr = curr .. ch
-                end
-            end
-            if curr ~= "" then
-                table.insert(tokens, curr)
-            end
-        end
-    end
-
-    local base_pos = {}
-    local neg_comps = {}
-    local post_pos = {}
-    local stage = "base" -- "base" -> "neg" -> "post"
+    -- 0. 流式解析操作符序列：支持加号/初始部件总是增加，减号后总是扣除，支持多次任意交替
+    local ops = {}
     local curr_op = "+"
 
-    for _, t in ipairs(tokens) do
-        if t == "-" then
-            curr_op = "-"
-            if stage == "base" then
-                stage = "neg"
-            end
-        elseif t == "+" then
-            curr_op = "+"
-            if stage == "neg" then
-                stage = "post"
-            end
-        else
-            if curr_op == "-" then
-                table.insert(neg_comps, t)
-            else
-                if stage == "neg" then
-                    stage = "post"
-                    table.insert(post_pos, t)
-                elseif stage == "post" then
-                    table.insert(post_pos, t)
+    for _, raw_c in ipairs(components) do
+        local s = raw_c:gsub("[\r\n\t ]", "")
+        if s ~= "" then
+            local i = 1
+            while i <= #s do
+                local ch = s:sub(i, i)
+                if ch == "+" or ch == "-" then
+                    curr_op = ch
+                    i = i + 1
                 else
-                    table.insert(base_pos, t)
-                end
-            end
-            curr_op = "+"
-        end
-    end
-
-    local pos_comps = {}
-    for _, b in ipairs(base_pos) do
-        table.insert(pos_comps, b)
-    end
-
-    -- 若触发了减法模式 (包含需要去掉的部件)
-    if #neg_comps > 0 then
-        local sub_results = {}
-        local seen_sub = {}
-
-        -- 对 neg_comps 进行规范化与动态双拼转译
-        local norm_neg = {}
-        for _, n in ipairs(neg_comps) do
-            local dec_n = n
-            if #n == 2 and n:match("^%a%a$") then
-                dec_n = decode_shuangpin(n, im_type)
-            end
-            table.insert(norm_neg, COMP_ALIASES[dec_n] or dec_n)
-        end
-
-        -- 阶段 1：直接子结构精确扣除 (如 佩 - 亻 = 𫥞, 泰 - 氺 = 𡗗, 森 - 木 = 林, 休 - 亻 = 木)
-        for _, p in ipairs(base_pos) do
-            local info = parse_char_info(p)
-            local leaves = {}
-            for _, l in ipairs(info.leaves) do
-                table.insert(leaves, l)
-            end
-            local matched_count = 0
-            local remains = {}
-            local used_neg = {}
-            for _, leaf in ipairs(leaves) do
-                local norm_leaf = COMP_ALIASES[leaf] or leaf
-                local found = false
-                for idx, neg in ipairs(norm_neg) do
-                    if not used_neg[idx] and (neg == norm_leaf or neg == leaf) then
-                        used_neg[idx] = true
-                        matched_count = matched_count + 1
-                        found = true
-                        break
+                    local start_pos = i
+                    while i <= #s and s:sub(i, i) ~= "+" and s:sub(i, i) ~= "-" do
+                        i = i + 1
                     end
-                end
-                if not found then
-                    table.insert(remains, leaf)
-                end
-            end
-
-            if matched_count == #norm_neg and #remains >= 1 then
-                for _, r in ipairs(remains) do
-                    if not seen_sub[r] then
-                        table.insert(sub_results, r)
-                        seen_sub[r] = true
+                    local item = s:sub(start_pos, i - 1)
+                    if item:match("^%a+$") then
+                        -- 拼音/双拼编码，作为单项存入
+                        table.insert(ops, { op = curr_op, item = item })
+                    else
+                        -- 汉字部件（可能连打多个汉字如 "立月"），逐字拆为独立运算项
+                        for _, code in utf8.codes(item) do
+                            table.insert(ops, { op = curr_op, item = utf8.char(code) })
+                        end
                     end
                 end
             end
         end
+    end
 
-        -- 若减法后无后续加法部件，直接返回扣除结果 (如 佩 - 亻 = 𫥞)
-        if #post_pos == 0 then
-            return sub_results
-        end
+    local current_comps = {}
+    local pure_sub = true
+    local has_sub = false
 
-        -- 若有后续加法部件 (如 佩 - 亻 + 木)，将扣除剩余部件与加法部件合并为新查询项！
-        pos_comps = {}
-        for _, r in ipairs(sub_results) do
-            table.insert(pos_comps, r)
+    for _, step in ipairs(ops) do
+        local op = step.op
+        local item = step.item
+
+        -- 对字母编码进行双拼解码或拼音规整
+        local dec_item = item
+        if #item == 2 and item:match("^%a%a$") then
+            dec_item = decode_shuangpin(item, im_type)
         end
-        for _, p in ipairs(post_pos) do
-            table.insert(pos_comps, p)
+        local norm_item = COMP_ALIASES[dec_item] or dec_item
+
+        if op == "+" then
+            if #current_comps > 0 and has_sub then
+                pure_sub = false
+            end
+            table.insert(current_comps, norm_item)
+        elseif op == "-" then
+            has_sub = true
+            current_comps = apply_single_subtraction(current_comps, norm_item)
         end
+    end
+
+    -- 若为纯减法运算（如 佩-亻 得到 𫥞，龍-立月 得到 𳑳，森-木 得到 林），直接返回剩余部件
+    if pure_sub and has_sub and #current_comps > 0 then
+        local sub_res = {}
+        local seen = {}
+        for _, c in ipairs(current_comps) do
+            if not seen[c] then
+                table.insert(sub_res, c)
+                seen[c] = true
+            end
+        end
+        return sub_res
+    end
+
+    if #current_comps == 0 then
+        return {}
     end
 
     -- 1. 规范化处理与动态双拼转译
     local normalized_comps = {}
-    for _, raw_comp in ipairs(pos_comps) do
-        local comp = raw_comp:gsub("[\r\n\t ]", "")
-        if comp ~= "" then
-            -- 若已直接命中（如汉字部件或合法全拼），直接采用
-            if offsets[comp] then
-                table.insert(normalized_comps, comp)
-            elseif #comp == 2 and comp:match("^%a%a$") then
-                -- 动态调用万象双拼算法解算全拼 (如 kz -> kou, uv -> shui, ho -> huo)
-                local full_py = decode_shuangpin(comp, im_type)
-                table.insert(normalized_comps, full_py)
-            else
-                table.insert(normalized_comps, comp)
-            end
+    for _, comp in ipairs(current_comps) do
+        if offsets[comp] then
+            table.insert(normalized_comps, comp)
+        elseif #comp == 2 and comp:match("^%a%a$") then
+            local full_py = decode_shuangpin(comp, im_type)
+            table.insert(normalized_comps, full_py)
+        else
+            table.insert(normalized_comps, comp)
         end
     end
 
