@@ -94,26 +94,13 @@ patch:
 
   # 依赖方案声明
   schema/dependencies/+:
-    - ids_search
+    - ids_reverse
     - kagiroi
 
-  # 挂接部件检字副方案 (librime-ids-search C++ 原生插件: 大写 I 引导, 普通拼音/双拼部件检索)
-  recognizer/patterns/ids_search: '^I[^0-9,.;=\[\]\s-]*$'
-  engine/segmentors/@before 3: affix_segmentor@ids_search
-  engine/processors/@before 0: lua_processor@*ids_hybrid_composer*editor
-  ids_search:
-    tag: ids_search
-    prefix: "I"
-    tips: "〔部件检字〕"
-    reverse_hotkey: "Control+i"
-
-  # 挂接大写 O 引导的汉字拼音混合交互检字 (ids_hybrid_composer + 原生 C++ ids_search_translator)
-  recognizer/patterns/ids_search_hybrid: '^O.*$'
-
-  engine/segmentors/@before 0: lua_segmentor@*ids_hybrid_composer*segmentor
-  engine/filters/@before 0: lua_filter@*ids_hybrid_composer*filter
-  engine/filters/+:
-    - lua_filter@*ids_hybrid_composer*cleaner
+  # 挂接 C++ 原生部件检字套件 (librime-ids-reverse 官方架构版，零 Lua 介入)
+  engine/processors/@before 0: ids_reverse_processor
+  engine/segmentors/@before 0: ids_reverse_segmentor
+  engine/filters/@before 0: ids_reverse_filter
 
   # 挂接日文方案 (kagiroi: 大写 J 引导)
   recognizer/patterns/kagiroi: '^(?:J|\xE3\x81[\x81-\xBF]|\xE3\x82[\x80-\x9F]|\xE3\x83\xBC)(?:\xE3\x81[\x81-\xBF]|\xE3\x82[\x80-\x9F]|\xE3\x83\xBC|[a-z\-;A-Z])*$'
@@ -127,18 +114,14 @@ patch:
     speller:
       __include: kagiroi:/alphabet/3_dan
 
-  # 注入 translators
+  # 注入 translators (检字部分全纯 C++，日文保留)
   engine/translators/+:
-    - ids_search_translator@ids_trans
-    - lua_translator@*ids_hybrid_composer*translator
+    - ids_reverse_translator
     - lua_translator@*kagiroi/kagiroi_translator
 
-  ids_trans: &ids_trans_conf
+  ids_reverse:
     data_file: build/ids_data.bin
-    tag: ids_search
-    prefix: ""
-    tips: "〔部件检字〕"
-    reverse_hotkey: "Control+i"
+    custom_file: ids_custom.txt
     max_results: 60
     shuangpin_scheme: flypy
     show_pinyin: true
@@ -146,27 +129,13 @@ patch:
     show_unicode: true
     show_block: true
     ids_format: unicode
-    custom_file: ids_custom.txt
+    search_prefix: "I"
+    search_tag: ids_reverse_search
+    search_tips: "〔部件检字〕"
+    hybrid_prefix: "O"
+    hybrid_tag: ids_reverse_hybrid
+    hybrid_tips: "〔汉字部件检字〕"
 
-  ids_hybrid: &ids_hybrid_conf
-    data_file: build/ids_data.bin
-    tag: ids_search_hybrid
-    prefix: "O"
-    tips: "〔汉字部件检字〕"
-    max_results: 60
-    shuangpin_scheme: flypy
-    show_pinyin: true
-    show_ids: true
-    show_unicode: true
-    show_block: true
-    ids_format: unicode
-    custom_file: ids_custom.txt
-
-  ids_search_translator: *ids_trans_conf
-
-  # 快符功能：
-  # a/、单字母组合，触发预设编码自动上屏快符，支持将值设为"repeat" 以支持对应按键重复上屏功能，custom>schema>lua最终合并键值
-  # 现在就支持26字母快符，结合成对符号输入，这边的压力小一些
   quick_symbol_text:
     trigger: "^;([a-zA-Z0-9])$"
     symkey:

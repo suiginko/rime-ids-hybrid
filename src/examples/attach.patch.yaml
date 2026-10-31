@@ -1,0 +1,37 @@
+# 挂接到现有 Rime 方案的参考 patch
+#
+# 用法：
+#   1. 把本文件内容合并到 <方案名>.custom.yaml 的 patch: 节点下；
+#   2. 把 ids_data.bin 放到用户数据目录的 build/ 下；
+#   3. 重新部署。
+#
+# I 模式与 O 模式都由插件原生 processor + segmentor 触发，
+# 不再依赖 recognizer/patterns/ids_reverse 和 matcher。
+# 现有方案中的 matcher/recognizer 可以保留，用于其他规则。
+
+patch:
+  engine/processors/@before 0: ids_reverse_processor
+  engine/segmentors/@before 0: ids_reverse_segmentor
+  engine/filters/@before 0: ids_reverse_filter
+
+  engine/translators/+:
+    - ids_reverse_translator
+
+  ids_reverse:
+    data_file: build/ids_data.bin
+    custom_file: ids_custom.txt
+    max_results: 60
+    shuangpin_scheme: flypy
+    show_pinyin: true
+    show_ids: true
+    show_unicode: true
+    show_block: true
+    ids_format: unicode
+
+    search_prefix: "I"
+    search_tag: ids_reverse_search
+    search_tips: "〔部件检字〕"
+
+    hybrid_prefix: "O"
+    hybrid_tag: ids_reverse_hybrid
+    hybrid_tips: "〔汉字部件检字〕"

@@ -1,9 +1,9 @@
 //
-// ids_store.h — ids_search 插件数据层。
+// ids_store.h — ids_reverse 插件数据层。
 // 加载 IDS3 单文件（mmap 惰性映射），提供稠密 id / 热字段 / 整数部件匹配。
 //
-#ifndef RIME_IDS_SEARCH_IDS_STORE_H_
-#define RIME_IDS_SEARCH_IDS_STORE_H_
+#ifndef RIME_IDS_REVERSE_IDS_STORE_H_
+#define RIME_IDS_REVERSE_IDS_STORE_H_
 
 #include <cstdint>
 #include <filesystem>
@@ -15,7 +15,7 @@
 
 #include <rime/common.h>
 
-namespace ids_search {
+namespace ids_reverse {
 
 namespace fs = std::filesystem;
 
@@ -316,6 +316,6 @@ class IdsStore {
   bool loaded_ = false;
 };
 
-}  // namespace ids_search
+}  // namespace ids_reverse
 
-#endif  // RIME_IDS_SEARCH_IDS_STORE_H_
+#endif  // RIME_IDS_REVERSE_IDS_STORE_H_

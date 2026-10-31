@@ -29,3 +29,6 @@ update_wanxiang_tips.py
 .vscode/
 __pycache__/
 *.py[cod]
+
+scratch/
+

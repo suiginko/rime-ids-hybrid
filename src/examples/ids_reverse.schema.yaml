@@ -1,0 +1,70 @@
+# 独立部件检字方案示例
+#
+# 将本文件复制到 Rime 用户目录，并将 default.yaml 的 schema_list 加入 ids_reverse。
+# data_file 相对用户数据目录解析；也可以写成绝对路径。
+schema:
+  schema_id: ids_reverse
+  name: "部件模糊检字"
+  version: "1.8"
+  author: "librime-ids-reverse"
+  description: |
+    C++ 原生部件检字：I 模式 + O 模式混合检字。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+  - name: show_pinyin
+    reset: 1
+  - name: show_ids
+    reset: 1
+  - name: show_unicode
+    reset: 1
+  - name: show_block
+    reset: 1
+
+engine:
+  processors:
+    - ids_reverse_processor
+    - ascii_composer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ids_reverse_segmentor
+    - abc_segmentor
+    - fallback_segmentor
+  translators:
+    - echo_translator
+    - ids_reverse_translator
+  filters:
+    - ids_reverse_filter
+    - uniquifier
+
+speller:
+  alphabet: "abcdefghijklmnopqrstuvwxyz'"
+  delimiter: " '"
+
+menu:
+  page_size: 5
+
+ids_reverse:
+  data_file: build/ids_data.bin
+  custom_file: ids_custom.txt
+  max_results: 60
+  shuangpin_scheme: flypy
+  show_pinyin: true
+  show_ids: true
+  show_unicode: true
+  show_block: true
+  ids_format: unicode
+
+  search_prefix: "I"
+  search_tag: ids_reverse_search
+  search_tips: "〔部件检字〕"
+
+  hybrid_prefix: "O"
+  hybrid_tag: ids_reverse_hybrid
+  hybrid_tips: "〔汉字部件检字〕"

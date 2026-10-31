@@ -8,11 +8,11 @@ patch:
   schema_list:
     - {schema: wanxiang_pro}
     - {schema: kagiroi}
-    - {schema: ids_search}
+    - {schema: ids_reverse}
 
   # 全局快捷键：句号翻页、逗号上一页、分号次选
   "key_binder/bindings/+":
     - { when: paging, accept: comma, send: Page_Up }
     - { when: has_menu, accept: period, send: Page_Down }
     - { when: has_menu, accept: semicolon, send: 2 }
-
+

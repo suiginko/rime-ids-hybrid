@@ -1,14 +1,13 @@
 //
-// ids_search_translator.cc — 部件检字翻译器（C++，IDS3
+// ids_reverse_translator.cc — ids_reverse 统一检字翻译器（C++，IDS3
 // 数据格式，面向查询延迟）。
 //
-#include "ids_search_translator.h"
+#include "ids_reverse_translator.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -22,12 +21,13 @@
 #include <rime/engine.h>
 #include <rime/schema.h>
 #include <rime/segmentation.h>
-#include <rime/service.h>
 #include <rime/translation.h>
 
+#include "ids_reverse_config.h"
+#include "ids_reverse_search.h"
 #include "ids_store.h"
 
-namespace ids_search {
+namespace ids_reverse {
 
 namespace {
 
@@ -188,7 +188,7 @@ std::string FormatIds(const std::string& raw_ids, const std::string& format) {
     if (cp >= 0x2FF0 && cp <= 0x2FFB) {
       if (format == "bracket") {
         static const char* kIdcLabels[] = {
-            "[左右]", "[上下]", "[左中右]", "[上中下]", "[全包]", "[上包]",
+            "[左右]", "[上下]", "[左中右]", "[上中下]", "[全包]",   "[上包]",
             "[下包]", "[左包]", "[左上包]", "[右上包]", "[左下包]", "[交叉]"};
         out += kIdcLabels[cp - 0x2FF0];
       } else if (format == "plain") {
@@ -620,12 +620,27 @@ std::vector<std::string> SegmentAlphaString(IdsStore& store,
     return items;
   }
   if (mode == "flypy" || mode == "zrm") {
+    // 先尝试全拼切分：若整个字符串能切成一串合法音节，则优先按全拼处理。
+    // 这样 Ikouhao / Inihao 这类全拼输入不会被误当成等长的双拼编码。
+    std::vector<std::string> segs = SegmentPinyinOptimal(store, chunk);
+    if (!segs.empty()) {
+      bool all_valid = true;
+      for (const auto& seg : segs) {
+        if (store.valid_pinyins().count(seg) == 0) {
+          all_valid = false;
+          break;
+        }
+      }
+      if (all_valid) {
+        g_seg_cache.Put(key, segs);
+        return segs;
+      }
+    }
     std::vector<std::string> sp;
     if (DecodeShuangpinString(store, chunk, mode, &sp) && !sp.empty()) {
       g_seg_cache.Put(key, sp);
       return sp;
     }
-    std::vector<std::string> segs = SegmentPinyinOptimal(store, chunk);
     if (!segs.empty()) {
       g_seg_cache.Put(key, segs);
       return segs;
@@ -1460,121 +1475,53 @@ std::string ToLower(const std::string& s) {
   return AsciiLower(s);
 }
 
+std::string BuildComment(IdsStore& store,
+                         uint32_t id,
+                         bool show_pinyin,
+                         bool show_ids,
+                         bool show_unicode,
+                         bool show_block,
+                         const std::string& ids_format) {
+  const uint8_t* py = nullptr;
+  const uint8_t* ids = nullptr;
+  uint16_t py_len = 0;
+  uint16_t ids_len = 0;
+  store.Cold(id, &py, &py_len, &ids, &ids_len);
+  const HotRec& hot = store.Hot(id);
+  std::vector<std::string> parts;
+  if (show_pinyin && py_len > 0) {
+    parts.push_back(std::string(reinterpret_cast<const char*>(py), py_len));
+  }
+  if (show_ids && ids_len > 0) {
+    parts.push_back(FormatIds(
+        std::string(reinterpret_cast<const char*>(ids), ids_len), ids_format));
+  }
+  uint32_t cp = store.CpOfId(id);
+  if (show_unicode) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%04X", cp);
+    parts.push_back(buf);
+  }
+  if (show_block) {
+    const char* bname = hot.block < 17 ? kBlockNames[hot.block] : "基本";
+    parts.push_back(bname);
+  }
+  return Join(parts, " ");
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// IdsSearchTranslator
+// IdsReverseTranslator
 // ---------------------------------------------------------------------------
 
-IdsSearchTranslator::IdsSearchTranslator(const rime::Ticket& ticket)
+IdsReverseTranslator::IdsReverseTranslator(const rime::Ticket& ticket)
     : rime::Translator(ticket) {
-  // 组件以 `- ids_search_translator` 引用时 name_space 默认是 "translator"，
-  // 自纠正到配置命名空间 ids_search。
-  if (ticket.name_space == "translator" || name_space_.empty()) {
-    name_space_ = "ids_search";
-  }
-  Initialize();
+  LoadReverseConfig(ticket, &name_space_, &config_);
 }
 
-void IdsSearchTranslator::Initialize() {
-  initialized_ = true;
-  if (!engine_ || !engine_->schema())
-    return;
-  rime::Config* config = engine_->schema()->config();
-  if (!config)
-    return;
-  std::string ns = name_space_ + "/";
-  config->GetString(ns + "data_file", &data_path_);
-  config->GetString(ns + "custom_file", &custom_path_);
-  if (data_path_.empty())
-    data_path_ = "ids_data.bin";
-
-  config->GetString(ns + "tag", &tag_);
-  if (tag_.empty())
-    tag_ = "ids_search";
-  config->GetString(ns + "prefix", &prefix_);
-  config->GetString(ns + "shuangpin_scheme", &shuangpin_scheme_);
-  if (shuangpin_scheme_ != "zrm" && shuangpin_scheme_ != "quanpin")
-    shuangpin_scheme_ = "flypy";
-  config->GetInt(ns + "max_results", &max_results_);
-  if (max_results_ <= 0)
-    max_results_ = 60;
-  config->GetString(ns + "tips", &tips_);
-  if (tips_.empty())
-    tips_ = "〔部件检字〕";
-  config->GetString(ns + "ids_format", &ids_format_);
-
-  bool v;
-  if (config->GetBool(ns + "show_pinyin", &v))
-    show_pinyin_ = v;
-  if (config->GetBool(ns + "show_ids", &v))
-    show_ids_ = v;
-  if (config->GetBool(ns + "show_unicode", &v))
-    show_unicode_ = v;
-  if (config->GetBool(ns + "show_block", &v))
-    show_block_ = v;
-
-  for (size_t i = 0; i < 64; ++i) {
-    std::string s_name;
-    if (config->GetString("switches/@" + std::to_string(i) + "/name",
-                          &s_name)) {
-      if (s_name == "show_pinyin")
-        has_sw_pinyin_ = true;
-      else if (s_name == "show_ids")
-        has_sw_ids_ = true;
-      else if (s_name == "show_unicode")
-        has_sw_unicode_ = true;
-      else if (s_name == "show_block")
-        has_sw_block_ = true;
-    } else {
-      if (config->GetItem("switches/@" + std::to_string(i)) == nullptr)
-        break;
-    }
-  }
-
-  if (rime::an<rime::ConfigList> list =
-          config->GetList(ns + "disabled_blocks")) {
-    for (size_t i = 0; i < list->size(); ++i) {
-      if (rime::an<rime::ConfigValue> value = list->GetValueAt(i)) {
-        std::string block_name;
-        if (value->GetString(&block_name)) {
-          auto it = BlockAliasMap().find(ToLower(block_name));
-          if (it != BlockAliasMap().end())
-            disabled_blocks_.insert(it->second);
-        }
-      }
-    }
-  }
-  {
-    std::string str;
-    if (config->GetString(ns + "disabled_blocks", &str) && !str.empty()) {
-      size_t i = 0;
-      while (i < str.size()) {
-        while (i < str.size() &&
-               (str[i] == ',' || str[i] == ' ' || str[i] == '\t' ||
-                str[i] == '\r' || str[i] == '\n'))
-          ++i;
-        size_t j = i;
-        while (j < str.size() && str[j] != ',' && str[j] != ' ' &&
-               str[j] != '\t' && str[j] != '\r' && str[j] != '\n')
-          ++j;
-        if (j > i) {
-          auto it = BlockAliasMap().find(ToLower(str.substr(i, j - i)));
-          if (it != BlockAliasMap().end())
-            disabled_blocks_.insert(it->second);
-        }
-        i = j;
-      }
-    }
-  }
-  disabled_blocks_enabled_ = !disabled_blocks_.empty();
-
-  prefix_len_ = prefix_.size();
-  prefix_byte_ = prefix_len_ ? prefix_[0] : 0;
-}
-
-std::string IdsSearchTranslator::PinyinMode() {
-  std::string mode = shuangpin_scheme_;
+std::string IdsReverseTranslator::PinyinMode() {
+  std::string mode = config_.shuangpin_scheme;
   if (engine_ && engine_->context()) {
     rime::Context* ctx = engine_->context();
     if (ctx->get_option("shuangpin_flypy") ||
@@ -1589,70 +1536,42 @@ std::string IdsSearchTranslator::PinyinMode() {
   return mode;
 }
 
-bool IdsSearchTranslator::EnsureLoaded() {
-  IdsStore& store = IdsStore::Instance();
-  if (!store.loaded()) {
-    if (!initialized_)
-      Initialize();
-    std::string dp = data_path_.empty() ? "ids_data.bin" : data_path_;
-    rime::Deployer& deployer = rime::Service::instance().deployer();
-    auto resolve = [&](const std::string& filename) -> fs::path {
-      fs::path p(filename);
-      if (p.is_absolute())
-        return p;
-      fs::path ud = deployer.user_data_dir / filename;
-      if (fs::exists(ud))
-        return ud;
-      fs::path sd = deployer.shared_data_dir / filename;
-      if (fs::exists(sd))
-        return sd;
-      return ud;
-    };
-    fs::path data = resolve(dp);
-    fs::path custom;
-    if (!custom_path_.empty())
-      custom = resolve(custom_path_);
-    bool ok = store.Load(data, custom);
-    if (!ok) {
-      LOG(ERROR) << "ids_search_translator: cannot load data file: '" << data
-                 << "'";
-      return false;
-    }
-  }
-  for (int b : store.custom_disabled_blocks()) {
-    if (disabled_blocks_.insert(b).second)
-      disabled_blocks_enabled_ = true;
-  }
+bool IdsReverseTranslator::EnsureLoaded() {
+  if (!EnsureIdsStoreLoaded(config_))
+    return false;
+  MergeCustomDisabledBlocks(&config_.disabled_blocks,
+                            &config_.disabled_blocks_enabled);
   return true;
 }
 
-std::vector<uint32_t> IdsSearchTranslator::Search(const std::string& query_raw,
-                                                  const std::string& mode) {
+std::vector<uint32_t> IdsReverseTranslator::Search(const std::string& query_raw,
+                                                   const std::string& mode) {
   IdsStore& store = IdsStore::Instance();
   const hash_set<int>* disabled =
-      disabled_blocks_enabled_ ? &disabled_blocks_ : nullptr;
-  return SearchComponents(store, query_raw, max_results_, mode, disabled);
+      config_.disabled_blocks_enabled ? &config_.disabled_blocks : nullptr;
+  return SearchComponents(store, query_raw, config_.max_results, mode,
+                          disabled);
 }
 
-rime::an<rime::Translation> IdsSearchTranslator::BuildCandidates(
+rime::an<rime::Translation> IdsReverseTranslator::BuildSearchCandidates(
     const std::vector<uint32_t>& results,
-    const std::string& query_raw,
+    const std::string& preedit,
     size_t start_pos,
     size_t end_pos) {
   IdsStore& store = IdsStore::Instance();
-  bool sw_p = show_pinyin_;
-  bool sw_i = show_ids_;
-  bool sw_u = show_unicode_;
-  bool sw_b = show_block_;
+  bool sw_p = config_.show_pinyin;
+  bool sw_i = config_.show_ids;
+  bool sw_u = config_.show_unicode;
+  bool sw_b = config_.show_block;
   if (engine_ && engine_->context()) {
     rime::Context* ctx = engine_->context();
-    if (has_sw_pinyin_)
+    if (config_.has_sw_pinyin)
       sw_p = ctx->get_option("show_pinyin");
-    if (has_sw_ids_)
+    if (config_.has_sw_ids)
       sw_i = ctx->get_option("show_ids");
-    if (has_sw_unicode_)
+    if (config_.has_sw_unicode)
       sw_u = ctx->get_option("show_unicode");
-    if (has_sw_block_)
+    if (config_.has_sw_block)
       sw_b = ctx->get_option("show_block");
   }
   auto translation = rime::New<rime::FifoTranslation>();
@@ -1667,7 +1586,7 @@ rime::an<rime::Translation> IdsSearchTranslator::BuildCandidates(
       parts.push_back(std::string(reinterpret_cast<const char*>(py), py_len));
     if (sw_i && ids_len > 0) {
       std::string ids_str(reinterpret_cast<const char*>(ids), ids_len);
-      parts.push_back(FormatIds(ids_str, ids_format_));
+      parts.push_back(FormatIds(ids_str, config_.ids_format));
     }
     uint32_t cp = store.CpOfId(id);
     if (sw_u) {
@@ -1681,39 +1600,32 @@ rime::an<rime::Translation> IdsSearchTranslator::BuildCandidates(
     }
     std::string comment = Join(parts, " ");
     std::string ch = CpToUtf8(cp);
-    auto cand = rime::New<rime::SimpleCandidate>(
-        "ids_search", start_pos, end_pos, ch, comment,
-        prefix_len_ > 0 ? query_raw : "");
+    auto cand = rime::New<rime::SimpleCandidate>("ids_reverse", start_pos,
+                                                 end_pos, ch, comment, preedit);
     cand->set_quality(100.0);
     translation->Append(cand);
   }
   return translation;
 }
 
-rime::an<rime::Translation> IdsSearchTranslator::Query(
+rime::an<rime::Translation> IdsReverseTranslator::QuerySearch(
     const std::string& input,
     const rime::Segment& segment) {
-  if (!segment.HasTag(tag_))
-    return nullptr;
-  if (!initialized_)
-    Initialize();
-
-  std::string query_raw = input;
   size_t start_pos = segment.start;
   size_t end_pos = segment.end;
+  std::string query_raw = input;
+  const std::string& prefix = config_.search.prefix;
 
-  if (prefix_len_ > 0) {
-    if (input.empty() || static_cast<unsigned char>(input[0]) !=
-                             static_cast<unsigned char>(prefix_byte_))
+  if (!prefix.empty()) {
+    if (input.compare(0, prefix.size(), prefix) != 0)
       return nullptr;
-    if (prefix_len_ > 1 && input.compare(0, prefix_len_, prefix_) != 0)
-      return nullptr;
-    query_raw = input.substr(prefix_len_);
+    query_raw = input.substr(prefix.size());
   }
 
   if (query_raw.empty()) {
     auto cand = rime::New<rime::SimpleCandidate>(
-        "ids_search", start_pos, end_pos, "", tips_, input + " " + tips_);
+        "ids_reverse", start_pos, end_pos, "", config_.search.tips,
+        input + " " + config_.search.tips);
     auto translation = rime::New<rime::FifoTranslation>();
     translation->Append(cand);
     return translation;
@@ -1726,7 +1638,110 @@ rime::an<rime::Translation> IdsSearchTranslator::Query(
   std::vector<uint32_t> results = Search(query_raw, mode);
   if (results.empty())
     return nullptr;
-  return BuildCandidates(results, query_raw, start_pos, end_pos);
+  return BuildSearchCandidates(results, prefix.empty() ? std::string() : input,
+                               start_pos, end_pos);
 }
 
-}  // namespace ids_search
+void IdsReverseTranslator::BuildResultCandidates(
+    IdsStore& store,
+    const std::vector<uint32_t>& results,
+    const rime::Segment& segment,
+    const std::string& pending,
+    rime::FifoTranslation* translation) {
+  bool show_pinyin = config_.show_pinyin;
+  bool show_ids = config_.show_ids;
+  bool show_unicode = config_.show_unicode;
+  bool show_block = config_.show_block;
+  rime::Context* ctx = engine_ ? engine_->context() : nullptr;
+  if (ctx) {
+    if (config_.has_sw_pinyin)
+      show_pinyin = ctx->get_option("show_pinyin");
+    if (config_.has_sw_ids)
+      show_ids = ctx->get_option("show_ids");
+    if (config_.has_sw_unicode)
+      show_unicode = ctx->get_option("show_unicode");
+    if (config_.has_sw_block)
+      show_block = ctx->get_option("show_block");
+  }
+  std::string preedit = "\t";
+  if (pending == "-")
+    preedit = "-\t";
+  else if (pending == "+")
+    preedit = "+\t";
+
+  for (uint32_t id : results) {
+    uint32_t cp = store.CpOfId(id);
+    std::string text = CpToUtf8(cp);
+    std::string comment =
+        BuildComment(store, id, show_pinyin, show_ids, show_unicode, show_block,
+                     config_.ids_format);
+    auto cand = rime::New<rime::SimpleCandidate>(
+        "ids_reverse", segment.start, segment.end, text, comment, preedit);
+    cand->set_quality(100.0);
+    translation->Append(cand);
+  }
+}
+
+void IdsReverseTranslator::BuildComponentCandidates(
+    IdsStore& store,
+    const std::vector<uint32_t>& results,
+    const rime::Segment& segment,
+    rime::FifoTranslation* translation) {
+  for (uint32_t id : results) {
+    if (config_.disabled_blocks_enabled &&
+        config_.disabled_blocks.count(static_cast<int>(store.Hot(id).block))) {
+      continue;
+    }
+    uint32_t cp = store.CpOfId(id);
+    std::string text = CpToUtf8(cp);
+    auto cand = rime::New<rime::SimpleCandidate>(
+        "hanzi_component", segment.start, segment.end, text, "");
+    cand->set_quality(100.0);
+    translation->Append(cand);
+  }
+}
+
+rime::an<rime::Translation> IdsReverseTranslator::QueryHybrid(
+    const rime::Segment& segment) {
+  rime::Context* ctx = engine_ ? engine_->context() : nullptr;
+  if (!ctx || !IsReverseActive(ctx, config_.hybrid.prefix))
+    return nullptr;
+  bool has_hybrid = segment.HasTag(config_.hybrid.tag);
+  bool has_component = segment.HasTag("hanzi_component");
+  if (!has_hybrid && !has_component)
+    return nullptr;
+  if (!EnsureLoaded())
+    return nullptr;
+
+  IdsStore& store = IdsStore::Instance();
+  HybridState st = ReadHybridState(ctx, config_.hybrid.prefix);
+  auto translation = rime::New<rime::FifoTranslation>();
+  const std::string& pending = st.pending;
+
+  if ((pending.empty() || pending == "-" || pending == "+") &&
+      !st.components.empty()) {
+    std::vector<uint32_t> results = SearchHybrid(
+        store, st.components, PinyinMode(), config_.max_results,
+        config_.disabled_blocks_enabled ? &config_.disabled_blocks : nullptr);
+    BuildResultCandidates(store, results, segment, pending, translation.get());
+  } else if (!pending.empty() && pending != "-" && pending != "+" &&
+             has_component) {
+    std::vector<uint32_t> results =
+        GetComponentCandidates(store, pending, PinyinMode(), 80);
+    BuildComponentCandidates(store, results, segment, translation.get());
+  }
+
+  if (translation->size() == 0)
+    return nullptr;
+  return translation;
+}
+
+rime::an<rime::Translation> IdsReverseTranslator::Query(
+    const std::string& input,
+    const rime::Segment& segment) {
+  if (segment.HasTag(config_.search.tag))
+    return QuerySearch(input, segment);
+  return QueryHybrid(segment);
+}
+
+}  // namespace ids_reverse
