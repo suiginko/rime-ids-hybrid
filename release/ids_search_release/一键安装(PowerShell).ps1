@@ -79,7 +79,6 @@ Remove-Item "$RimeUserDir\ids_meta.bin" -Force -ErrorAction SilentlyContinue
 Copy-Item "2.【用户配置目录】\ids_data.bin" "$BuildDir\ids_data.bin" -Force
 Copy-Item "2.【用户配置目录】\ids_data.bin" "$RimeUserDir\ids_data.bin" -Force
 Copy-Item "2.【用户配置目录】\ids_reverse.schema.yaml" "$RimeUserDir\ids_reverse.schema.yaml" -Force
-Copy-Item "2.【用户配置目录】\lua" "$RimeUserDir" -Recurse -Force
 
 if (-not (Test-Path "$RimeUserDir\ids_custom.txt")) {
     Copy-Item "2.【用户配置目录】\ids_custom.txt" "$RimeUserDir\ids_custom.txt" -Force

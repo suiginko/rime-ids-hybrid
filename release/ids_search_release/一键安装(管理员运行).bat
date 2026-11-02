@@ -82,7 +82,6 @@ copy /Y "2.ã€ç”¨æˆ·é…ç½ç›å½•ã‘\ids_data.bin" "!RIME_USER_DIR!\build\ids_data.b
 copy /Y "2.ã€ç”¨æˆ·é…ç½ç›å½•ã‘\ids_data.bin" "!RIME_USER_DIR!\ids_data.bin" >nul
 copy /Y "2.ã€ç”¨æˆ·é…ç½ç›å½•ã‘\ids_reverse.schema.yaml" "!RIME_USER_DIR!\ids_reverse.schema.yaml" >nul
 if not exist "!RIME_USER_DIR!\lua" mkdir "!RIME_USER_DIR!\lua"
-xcopy /E /I /Y "2.ã€ç”¨æˆ·é…ç½ç›å½•ã‘\lua" "!RIME_USER_DIR!\lua" >nul
 
 if not exist "!RIME_USER_DIR!\ids_custom.txt" (
     copy /Y "2.ã€ç”¨æˆ·é…ç½ç›å½•ã‘\ids_custom.txt" "!RIME_USER_DIR!\ids_custom.txt" >nul
