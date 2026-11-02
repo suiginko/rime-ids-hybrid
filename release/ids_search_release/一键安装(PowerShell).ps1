@@ -78,7 +78,7 @@ Remove-Item "$RimeUserDir\ids_meta.bin" -Force -ErrorAction SilentlyContinue
 # 部署 IDS3 单文件与 Lua 检字脚本
 Copy-Item "2.【用户配置目录】\ids_data.bin" "$BuildDir\ids_data.bin" -Force
 Copy-Item "2.【用户配置目录】\ids_data.bin" "$RimeUserDir\ids_data.bin" -Force
-Copy-Item "2.【用户配置目录】\ids_search.schema.yaml" "$RimeUserDir\ids_search.schema.yaml" -Force
+Copy-Item "2.【用户配置目录】\ids_reverse.schema.yaml" "$RimeUserDir\ids_reverse.schema.yaml" -Force
 Copy-Item "2.【用户配置目录】\lua" "$RimeUserDir" -Recurse -Force
 
 if (-not (Test-Path "$RimeUserDir\ids_custom.txt")) {

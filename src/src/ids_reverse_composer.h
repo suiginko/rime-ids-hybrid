@@ -64,8 +64,12 @@ class IdsReverseFilter : public rime::Filter {
                                     rime::CandidateList* candidates) override;
 
  private:
+  void LoadCustomPhrases();
+
   ReverseConfig config_;
   bool suppress_ = false;
+  rime::hash_map<std::string, std::vector<std::string>> custom_phrases_;
+  bool custom_phrases_loaded_ = false;
 };
 
 }  // namespace ids_reverse

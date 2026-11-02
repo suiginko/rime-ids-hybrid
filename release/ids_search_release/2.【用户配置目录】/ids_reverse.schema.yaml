@@ -1,0 +1,83 @@
+# Rime schema
+# encoding: utf-8
+
+schema:
+  schema_id: ids_reverse
+  name: "部件模糊检字"
+  version: "2.1"
+  author: "Carlson24 & suiginko"
+  description: |
+    C++ 原生部件检字套件（librime-ids-reverse 官方架构版）：
+    - 纯 C++ 原生实现，零 Lua 介入；
+    - I 模式：大写 I 引导单字/部件检字（如 Imumu -> 林）；
+    - O 模式：大写 O 引导混合检字与代数加减运算（如 O龍-立月 -> 𳑳）；
+    - 双梯队候选模型：第一梯队残存部件置顶，第二梯队衍生汉字紧随其后。
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: ["中文", "西文"]
+  - name: show_pinyin
+    reset: 1
+    states: ["关读音", "开读音"]
+  - name: show_ids
+    reset: 1
+    states: ["关结构", "开结构"]
+  - name: show_unicode
+    reset: 1
+    states: ["关编码", "开编码"]
+  - name: show_block
+    reset: 1
+    states: ["关分区", "开分区"]
+
+engine:
+  processors:
+    - ids_reverse_processor
+    - ascii_composer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ids_reverse_segmentor
+    - abc_segmentor
+    - fallback_segmentor
+  translators:
+    - echo_translator
+    - ids_reverse_translator
+  filters:
+    - ids_reverse_filter
+    - uniquifier
+
+speller:
+  alphabet: "abcdefghijklmnopqrstuvwxyz'"
+  delimiter: " '"
+
+menu:
+  page_size: 5
+
+ids_reverse:
+  data_file: build/ids_data.bin
+  custom_file: ids_custom.txt
+  max_results: 60
+  shuangpin_scheme: flypy
+  show_pinyin: true
+  show_ids: true
+  show_unicode: true
+  show_block: true
+  ids_format: unicode
+  search_prefix: "I"
+  search_tag: ids_reverse_search
+  search_tips: "〔部件检字〕"
+  hybrid_prefix: "O"
+  hybrid_tag: ids_reverse_hybrid
+  hybrid_tips: "〔汉字部件检字〕"
+
+# 快捷键：句号翻页、逗号上一页、分号次选
+key_binder:
+  bindings:
+    - { when: paging, accept: comma, send: Page_Up }
+    - { when: has_menu, accept: period, send: Page_Down }
+    - { when: has_menu, accept: semicolon, send: 2 }

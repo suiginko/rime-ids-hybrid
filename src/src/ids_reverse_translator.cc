@@ -26,6 +26,11 @@
 #include "ids_reverse_config.h"
 #include "ids_reverse_search.h"
 #include "ids_store.h"
+#include <fstream>
+#include <filesystem>
+#include <rime/service.h>
+
+namespace fs = std::filesystem;
 
 namespace ids_reverse {
 
@@ -77,6 +82,21 @@ uint32_t DecodeNext(const std::string& s, size_t* i) {
 uint32_t CpOf(const std::string& ch) {
   size_t i = 0;
   return DecodeNext(ch, &i);
+}
+
+bool IsSingleChar(const std::string& s) {
+  size_t i = 0;
+  if (DecodeNext(s, &i) == 0)
+    return false;
+  return i == s.size();
+}
+
+bool HasWhitespaceChar(const std::string& s) {
+  for (unsigned char c : s) {
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+      return true;
+  }
+  return false;
 }
 
 std::string CpToUtf8(uint32_t cp) {
@@ -1518,6 +1538,96 @@ std::string BuildComment(IdsStore& store,
 IdsReverseTranslator::IdsReverseTranslator(const rime::Ticket& ticket)
     : rime::Translator(ticket) {
   LoadReverseConfig(ticket, &name_space_, &config_);
+  LoadCustomPhrases();
+}
+
+void IdsReverseTranslator::LoadCustomPhrases() {
+  if (custom_phrases_loaded_)
+    return;
+  custom_phrases_loaded_ = true;
+
+  std::string user_dict_name = "custom_phrase";
+  if (engine_ && engine_->schema() && engine_->schema()->config()) {
+    engine_->schema()->config()->GetString("custom_phrase/user_dict",
+                                           &user_dict_name);
+  }
+
+  rime::Deployer& deployer = rime::Service::instance().deployer();
+  fs::path file_path = deployer.user_data_dir / (user_dict_name + ".txt");
+  if (!fs::exists(file_path)) {
+    file_path = deployer.shared_data_dir / (user_dict_name + ".txt");
+  }
+  if (!fs::exists(file_path)) {
+    return;
+  }
+
+  std::ifstream ifs(file_path);
+  if (!ifs.is_open()) {
+    return;
+  }
+
+  struct PhraseItem {
+    std::string text;
+    int weight = 0;
+  };
+  rime::hash_map<std::string, std::vector<PhraseItem>> phrase_map;
+
+  std::string line;
+  while (std::getline(ifs, line)) {
+    if (line.empty() || line[0] == '#')
+      continue;
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    size_t tab1 = line.find('\t');
+    if (tab1 == std::string::npos)
+      continue;
+    std::string text = line.substr(0, tab1);
+    size_t tab2 = line.find('\t', tab1 + 1);
+    std::string code;
+    int weight = 0;
+    if (tab2 == std::string::npos) {
+      code = line.substr(tab1 + 1);
+    } else {
+      code = line.substr(tab1 + 1, tab2 - tab1 - 1);
+      try {
+        weight = std::stoi(line.substr(tab2 + 1));
+      } catch (...) {
+        weight = 0;
+      }
+    }
+    // 过滤空白
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+      text.erase(text.begin());
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+      text.pop_back();
+    while (!code.empty() && (code.front() == ' ' || code.front() == '\t'))
+      code.erase(code.begin());
+    while (!code.empty() && (code.back() == ' ' || code.back() == '\t'))
+      code.pop_back();
+
+    for (char& c : code) {
+      if (c >= 'A' && c <= 'Z')
+        c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (text.empty() || code.empty())
+      continue;
+    // 仅收录非空白单字（Utf8Length == 1）
+    if (IsSingleChar(text) && !HasWhitespaceChar(text)) {
+      phrase_map[code].push_back({text, weight});
+    }
+  }
+
+  for (auto& kv : phrase_map) {
+    std::stable_sort(kv.second.begin(), kv.second.end(),
+                     [](const PhraseItem& a, const PhraseItem& b) {
+                       return a.weight > b.weight;
+                     });
+    auto& target = custom_phrases_[kv.first];
+    target.reserve(kv.second.size());
+    for (const auto& item : kv.second) {
+      target.push_back(item.text);
+    }
+  }
 }
 
 std::string IdsReverseTranslator::PinyinMode() {
@@ -1685,8 +1795,22 @@ void IdsReverseTranslator::BuildResultCandidates(
 void IdsReverseTranslator::BuildComponentCandidates(
     IdsStore& store,
     const std::vector<uint32_t>& results,
+    const std::vector<std::string>& custom_words,
     const rime::Segment& segment,
     rime::FifoTranslation* translation) {
+  hash_set<std::string> seen;
+
+  // 1. 用户自定义短语 / 简码单字绝对置顶
+  for (const auto& w : custom_words) {
+    if (seen.insert(w).second) {
+      auto cand = rime::New<rime::SimpleCandidate>(
+          "hanzi_component", segment.start, segment.end, w, "");
+      cand->set_quality(150.0);
+      translation->Append(cand);
+    }
+  }
+
+  // 2. 静态拼音/部件库候选
   for (uint32_t id : results) {
     if (config_.disabled_blocks_enabled &&
         config_.disabled_blocks.count(static_cast<int>(store.Hot(id).block))) {
@@ -1694,6 +1818,9 @@ void IdsReverseTranslator::BuildComponentCandidates(
     }
     uint32_t cp = store.CpOfId(id);
     std::string text = CpToUtf8(cp);
+    if (!seen.insert(text).second) {
+      continue;
+    }
     auto cand = rime::New<rime::SimpleCandidate>(
         "hanzi_component", segment.start, segment.end, text, "");
     cand->set_quality(100.0);
@@ -1726,9 +1853,24 @@ rime::an<rime::Translation> IdsReverseTranslator::QueryHybrid(
     BuildResultCandidates(store, results, segment, pending, translation.get());
   } else if (!pending.empty() && pending != "-" && pending != "+" &&
              has_component) {
+    std::string clean_code = pending;
+    while (!clean_code.empty() &&
+           (clean_code.front() == '-' || clean_code.front() == '+')) {
+      clean_code.erase(clean_code.begin());
+    }
+    for (char& c : clean_code) {
+      if (c >= 'A' && c <= 'Z')
+        c = static_cast<char>(c - 'A' + 'a');
+    }
+    std::vector<std::string> custom_words;
+    auto it = custom_phrases_.find(clean_code);
+    if (it != custom_phrases_.end()) {
+      custom_words = it->second;
+    }
     std::vector<uint32_t> results =
         GetComponentCandidates(store, pending, PinyinMode(), 80);
-    BuildComponentCandidates(store, results, segment, translation.get());
+    BuildComponentCandidates(store, results, custom_words, segment,
+                             translation.get());
   }
 
   if (translation->size() == 0)

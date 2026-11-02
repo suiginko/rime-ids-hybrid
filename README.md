@@ -47,57 +47,32 @@
 
 ```yaml
 patch:
-  # 1. 挂接交互处理器与分段器
-  engine/processors/@before 0: lua_processor@*ids_hybrid_composer*editor
-  engine/segmentors/@before 0: lua_segmentor@*ids_hybrid_composer*segmentor
-  engine/segmentors/@before 3: affix_segmentor@ids_search
+  # 1. 依赖方案声明
+  schema/dependencies/+:
+    - ids_reverse
 
-  # 2. 挂接翻译器 (I 模式原生 C++ + O 模式混合部件检字)
+  # 2. 挂接 C++ 原生部件检字套件 (librime-ids-reverse 官方架构版，零 Lua 介入)
+  engine/processors/@before 0: ids_reverse_processor
+  engine/segmentors/@before 0: ids_reverse_segmentor
+  engine/filters/@before 0: ids_reverse_filter
+
+  # 3. 挂接原生翻译器
   engine/translators/+:
-    - ids_search_translator@ids_trans
-    - lua_translator@*ids_hybrid_composer*translator
+    - ids_reverse_translator
 
-  # 3. 挂接过滤器 (部件单字保护与候选去重)
-  engine/filters/@before 0: lua_filter@*ids_hybrid_composer*filter
-  engine/filters/+:
-    - lua_filter@*ids_hybrid_composer*cleaner
-
-  # 4. 触发正则匹配 (大写 I 引导纯拼音 / 大写 O 引导混合部件)
-  recognizer/patterns/ids_search: '^I[^0-9,.;=\[\]\s-]*$'
-  recognizer/patterns/ids_search_hybrid: '^O.*$'
-
-  # 5. 检字组件参数
-  ids_search:
-    tag: ids_search
-    prefix: "I"
-    tips: "〔部件检字〕"
-
-  ids_trans:
+  # 4. 原生检字引擎核心配置 (单组件同时驱动 I 模式拼音检字 与 O 模式部件混合检索)
+  ids_reverse:
     data_file: build/ids_data.bin
-    tag: ids_search
-    prefix: ""
-    tips: "〔部件检字〕"
-    max_results: 60
-    show_pinyin: true
-    show_ids: true
-    show_unicode: true
-    show_block: true
-    ids_format: unicode
     custom_file: ids_custom.txt
-
-  ids_hybrid:
-    data_file: build/ids_data.bin
-    tag: ids_search_hybrid
-    prefix: "O"
-    tips: "〔汉字部件检字〕"
-    max_results: 60
-    show_pinyin: true
-    show_ids: true
-    show_unicode: true
-    show_block: true
     ids_format: unicode
-    custom_file: ids_custom.txt
+    search_prefix: "I"
+    search_tag: ids_reverse_search
+    search_tips: "〔部件检字〕"
+    hybrid_prefix: "O"
+    hybrid_tag: ids_reverse_hybrid
+    hybrid_tips: "〔汉字部件检字〕"
 ```
+
 3. 右键小狼毫托盘图标 $\to$ 点击【重新部署】即可在您常用方案中直接打 `O` 或 `I` 检字。
 
 ---

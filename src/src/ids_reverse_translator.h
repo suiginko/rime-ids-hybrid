@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include <rime/common.h>
 #include <rime/translator.h>
 #include <rime/translation.h>
 
@@ -30,6 +31,7 @@ class IdsReverseTranslator : public rime::Translator {
  private:
   bool EnsureLoaded();
   std::string PinyinMode();
+  void LoadCustomPhrases();
 
   // search 模式：直接部件检索。
   rime::an<rime::Translation> QuerySearch(const std::string& input,
@@ -51,11 +53,14 @@ class IdsReverseTranslator : public rime::Translator {
                              rime::FifoTranslation* translation);
   void BuildComponentCandidates(IdsStore& store,
                                 const std::vector<uint32_t>& results,
+                                const std::vector<std::string>& custom_words,
                                 const rime::Segment& segment,
                                 rime::FifoTranslation* translation);
 
   ReverseConfig config_;
   std::string name_space_;
+  rime::hash_map<std::string, std::vector<std::string>> custom_phrases_;
+  bool custom_phrases_loaded_ = false;
 };
 
 }  // namespace ids_reverse

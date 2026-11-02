@@ -3,6 +3,12 @@
 //
 #include "ids_reverse_composer.h"
 
+#include <fstream>
+#include <filesystem>
+#include <rime/service.h>
+
+namespace fs = std::filesystem;
+
 #include <algorithm>
 #include <cctype>
 #include <set>
@@ -437,8 +443,15 @@ namespace {
 
 class HybridFilterTranslation : public rime::PrefetchTranslation {
  public:
-  HybridFilterTranslation(an<rime::Translation> translation, Context* ctx)
-      : PrefetchTranslation(translation), ctx_(ctx) {}
+  HybridFilterTranslation(
+      an<rime::Translation> translation,
+      Context* ctx,
+      const ReverseConfig& config,
+      const rime::hash_map<std::string, std::vector<std::string>>* custom_phrases)
+      : PrefetchTranslation(translation),
+        ctx_(ctx),
+        config_(config),
+        custom_phrases_(custom_phrases) {}
 
   an<Candidate> Peek() override {
     if (exhausted())
@@ -455,6 +468,35 @@ class HybridFilterTranslation : public rime::PrefetchTranslation {
 
  protected:
   bool Replenish() override {
+    // 在扫描底层候选之前，首先将自定义短语中的单字绝对置顶注入
+    if (!custom_injected_) {
+      custom_injected_ = true;
+      if (custom_phrases_ && ctx_ && !ctx_->composition().empty()) {
+        Segment& seg = ctx_->composition().back();
+        if (seg.HasTag("hanzi_component")) {
+          HybridState st = ReadHybridState(ctx_, config_.hybrid.prefix);
+          std::string code = st.pending;
+          while (!code.empty() && (code.front() == '-' || code.front() == '+'))
+            code.erase(code.begin());
+          for (char& c : code) {
+            if (c >= 'A' && c <= 'Z')
+              c = static_cast<char>(c - 'A' + 'a');
+          }
+          auto it = custom_phrases_->find(code);
+          if (it != custom_phrases_->end()) {
+            for (const auto& w : it->second) {
+              if (seen_.insert(w).second) {
+                auto cand = New<rime::SimpleCandidate>(
+                    "hanzi_component", seg.start, seg.end, w, "");
+                cand->set_quality(150.0);
+                cache_.push_back(cand);
+              }
+            }
+          }
+        }
+      }
+    }
+
     // 防止底层翻译器（预测、句子等）产生海量候选时长时间扫描。
     constexpr size_t kMaxScan = 2000;
     size_t scanned = 0;
@@ -493,6 +535,9 @@ class HybridFilterTranslation : public rime::PrefetchTranslation {
 
  private:
   Context* ctx_;
+  ReverseConfig config_;
+  const rime::hash_map<std::string, std::vector<std::string>>* custom_phrases_ = nullptr;
+  bool custom_injected_ = false;
   std::set<std::string> seen_;
 };
 
@@ -501,6 +546,94 @@ class HybridFilterTranslation : public rime::PrefetchTranslation {
 IdsReverseFilter::IdsReverseFilter(const rime::Ticket& ticket)
     : Filter(ticket) {
   LoadReverseConfig(ticket, &name_space_, &config_);
+  LoadCustomPhrases();
+}
+
+void IdsReverseFilter::LoadCustomPhrases() {
+  if (custom_phrases_loaded_)
+    return;
+  custom_phrases_loaded_ = true;
+
+  std::string user_dict_name = "custom_phrase";
+  if (engine_ && engine_->schema() && engine_->schema()->config()) {
+    engine_->schema()->config()->GetString("custom_phrase/user_dict",
+                                           &user_dict_name);
+  }
+
+  rime::Deployer& deployer = rime::Service::instance().deployer();
+  fs::path file_path = deployer.user_data_dir / (user_dict_name + ".txt");
+  if (!fs::exists(file_path)) {
+    file_path = deployer.shared_data_dir / (user_dict_name + ".txt");
+  }
+  if (!fs::exists(file_path)) {
+    return;
+  }
+
+  std::ifstream ifs(file_path);
+  if (!ifs.is_open()) {
+    return;
+  }
+
+  struct PhraseItem {
+    std::string text;
+    int weight = 0;
+  };
+  rime::hash_map<std::string, std::vector<PhraseItem>> phrase_map;
+
+  std::string line;
+  while (std::getline(ifs, line)) {
+    if (line.empty() || line[0] == '#')
+      continue;
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    size_t tab1 = line.find('\t');
+    if (tab1 == std::string::npos)
+      continue;
+    std::string text = line.substr(0, tab1);
+    size_t tab2 = line.find('\t', tab1 + 1);
+    std::string code;
+    int weight = 0;
+    if (tab2 == std::string::npos) {
+      code = line.substr(tab1 + 1);
+    } else {
+      code = line.substr(tab1 + 1, tab2 - tab1 - 1);
+      try {
+        weight = std::stoi(line.substr(tab2 + 1));
+      } catch (...) {
+        weight = 0;
+      }
+    }
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+      text.erase(text.begin());
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+      text.pop_back();
+    while (!code.empty() && (code.front() == ' ' || code.front() == '\t'))
+      code.erase(code.begin());
+    while (!code.empty() && (code.back() == ' ' || code.back() == '\t'))
+      code.pop_back();
+
+    for (char& c : code) {
+      if (c >= 'A' && c <= 'Z')
+        c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (text.empty() || code.empty())
+      continue;
+    if (IsSingleChar(text)) {
+      phrase_map[code].push_back({text, weight});
+    }
+  }
+
+  for (auto& kv : phrase_map) {
+    std::stable_sort(kv.second.begin(), kv.second.end(),
+                     [](const PhraseItem& a, const PhraseItem& b) {
+                       return a.weight > b.weight;
+                     });
+    auto& target = custom_phrases_[kv.first];
+    target.reserve(kv.second.size());
+    for (const auto& item : kv.second) {
+      target.push_back(item.text);
+    }
+  }
 }
 
 bool IdsReverseFilter::AppliesToSegment(Segment* segment) {
@@ -508,10 +641,13 @@ bool IdsReverseFilter::AppliesToSegment(Segment* segment) {
   Context* ctx = engine_ ? engine_->context() : nullptr;
   if (!ctx || !segment || ctx->get_option("ascii_mode"))
     return true;
-  if (ctx->input() != config_.search.prefix)
+  bool is_search_prefix = (ctx->input() == config_.search.prefix);
+  bool is_hybrid_prefix = (ctx->input() == config_.hybrid.prefix);
+  if (!is_search_prefix && !is_hybrid_prefix)
     return true;
-  if (segment->start != 0 ||
-      segment->end != static_cast<size_t>(config_.search.prefix.size())) {
+  size_t p_len = is_search_prefix ? config_.search.prefix.size()
+                                  : config_.hybrid.prefix.size();
+  if (segment->start != 0 || segment->end != static_cast<size_t>(p_len)) {
     return true;
   }
   suppress_ = true;
@@ -541,7 +677,7 @@ an<rime::Translation> IdsReverseFilter::Apply(an<rime::Translation> translation,
   if (!seg.HasTag("hanzi_component") && !seg.HasTag(kResultSegmentTag))
     return New<rime::FifoTranslation>();
 
-  return New<HybridFilterTranslation>(translation, ctx);
+  return New<HybridFilterTranslation>(translation, ctx, config_, &custom_phrases_);
 }
 
 }  // namespace ids_reverse

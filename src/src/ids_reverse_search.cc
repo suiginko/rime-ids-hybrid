@@ -256,7 +256,7 @@ std::vector<std::string> AtomicDecomposition(
   auto hit = cache->find(ch);
   if (hit != cache->end())
     return hit->second;
-  if (depth > 2 || AtomicComponents().count(ch)) {
+  if (depth > 6 || AtomicComponents().count(ch)) {
     std::vector<std::string> r = {ch};
     (*cache)[ch] = r;
     return r;
@@ -299,33 +299,44 @@ std::vector<std::string> KeysForTerm(IdsStore& store,
                                      const std::string& term,
                                      int count) {
   std::vector<std::string> keys;
-  std::string suffix = (count > 1) ? "*" + std::to_string(count) : "";
-  if (store.FindKey(term + suffix)) {
-    keys.push_back(term + suffix);
-    return keys;
+  // 支持从 count 逐级降级回退到 1，避免诸如 "一*3" 未建多重索引时漏字
+  for (int c = count; c >= 1; --c) {
+    std::string suffix = (c > 1) ? "*" + std::to_string(c) : "";
+    if (store.FindKey(term + suffix)) {
+      keys.push_back(term + suffix);
+      return keys;
+    }
   }
+
   auto pit = store.py_map().find(term);
   if (pit != store.py_map().end()) {
     for (uint16_t t : pit->second) {
       const std::string& token = store.TokenStr(t);
       if (token.empty())
         continue;
-      std::string k = token + suffix;
-      if (!store.FindKey(k) && count > 1)
-        k = token;
-      if (store.FindKey(k))
-        keys.push_back(k);
+      for (int c = count; c >= 1; --c) {
+        std::string suffix = (c > 1) ? "*" + std::to_string(c) : "";
+        std::string k = token + suffix;
+        if (store.FindKey(k)) {
+          keys.push_back(k);
+          break;
+        }
+      }
     }
     if (!keys.empty())
       return keys;
   }
+
   uint16_t token = store.ResolveTerm(term);
   if (token != kNoToken) {
-    std::string k = store.TokenStr(token) + suffix;
-    if (!store.FindKey(k) && count > 1)
-      k = store.TokenStr(token);
-    if (store.FindKey(k))
-      keys.push_back(k);
+    for (int c = count; c >= 1; --c) {
+      std::string suffix = (c > 1) ? "*" + std::to_string(c) : "";
+      std::string k = store.TokenStr(token) + suffix;
+      if (store.FindKey(k)) {
+        keys.push_back(k);
+        break;
+      }
+    }
   }
   return keys;
 }
@@ -358,33 +369,80 @@ std::vector<uint32_t> IntersectPostings(IdsStore& store,
                                         uint32_t limit) {
   if (terms.empty())
     return {};
-  // 先分别取出各项候选，再从最小集合开始求交，尽量避免大集合截断造成漏字。
-  constexpr uint32_t kPerTermLimit = 20000;
-  std::vector<std::vector<uint32_t>> sets;
-  sets.reserve(terms.size());
-  size_t start = 0;
+
+  // 1. 搜集每个 term 对应的所有 KeyEntry，并统计各自 full_cnt 预估总数
+  struct TermGroup {
+    std::vector<const KeyEntry*> entries;
+    uint32_t total_cnt = 0;
+  };
+
+  std::vector<TermGroup> term_groups(terms.size());
+  size_t min_idx = 0;
+  uint32_t min_cnt = UINT32_MAX;
+
   for (size_t i = 0; i < terms.size(); ++i) {
-    sets.push_back(PostingIdsForTerm(store, terms[i], counts[i],
-                                     std::max(kPerTermLimit, limit)));
-    if (sets.back().empty())
-      return {};
-    if (sets[i].size() < sets[start].size())
-      start = i;
-  }
-  std::vector<uint32_t> result = sets[start];
-  for (size_t i = 0; i < sets.size() && !result.empty(); ++i) {
-    if (i == start)
-      continue;
-    hash_set<uint32_t> next_set(sets[i].begin(), sets[i].end());
-    std::vector<uint32_t> filtered;
-    filtered.reserve(result.size());
-    for (uint32_t id : result) {
-      if (next_set.count(id))
-        filtered.push_back(id);
+    auto keys = KeysForTerm(store, terms[i], counts[i]);
+    uint32_t sum = 0;
+    for (const auto& k : keys) {
+      const KeyEntry* e = store.FindKey(k);
+      if (e && e->full_cnt > 0) {
+        term_groups[i].entries.push_back(e);
+        sum += e->full_cnt;
+      }
     }
-    result.swap(filtered);
+    // 若某个 term 没有任何有效候选，交集必为空
+    if (term_groups[i].entries.empty()) {
+      return {};
+    }
+    term_groups[i].total_cnt = sum;
+    if (sum < min_cnt) {
+      min_cnt = sum;
+      min_idx = i;
+    }
   }
-  return result;
+
+  // 2. 以基数最小的 term 作为种子集合，全部拉出（不施加任何硬编码截断，避免高频部件如“一”遗漏）
+  std::vector<uint32_t> candidates;
+  hash_set<uint32_t> seen;
+  for (const KeyEntry* e : term_groups[min_idx].entries) {
+    store.ForEachFull(*e, [&](uint32_t id) {
+      if (seen.insert(id).second) {
+        candidates.push_back(id);
+      }
+      return true;
+    });
+  }
+
+  if (candidates.empty())
+    return {};
+
+  // 3. 对种子候选集，使用其余各 term 的位图进行高速过滤 (O(1)位运算)
+  for (size_t i = 0; i < term_groups.size() && !candidates.empty(); ++i) {
+    if (i == min_idx)
+      continue;
+    const auto& group = term_groups[i];
+    std::vector<uint32_t> filtered;
+    filtered.reserve(candidates.size());
+    for (uint32_t id : candidates) {
+      // 只要该 term 的某一个 key 包含 id 即满足
+      bool match = false;
+      for (const KeyEntry* e : group.entries) {
+        if (store.FullContains(*e, id)) {
+          match = true;
+          break;
+        }
+      }
+      if (match) {
+        filtered.push_back(id);
+      }
+    }
+    candidates.swap(filtered);
+  }
+
+  if (candidates.size() > limit)
+    candidates.resize(limit);
+
+  return candidates;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +451,90 @@ std::vector<uint32_t> IntersectPostings(IdsStore& store,
 
 void AddCount(std::map<std::string, int>* counts, const std::string& k) {
   (*counts)[k] += 1;
+}
+
+int CheckAltsMatch(IdsStore& store,
+                   uint32_t id,
+                   const std::vector<std::string>& normalized) {
+  uint32_t total = static_cast<uint32_t>(normalized.size());
+  if (total == 0 || total > 64)
+    return 0;
+  const HotRec& h = store.Hot(id);
+  if (total <= 31 && !(h.flags & (1u << total)))
+    return 0;
+
+  struct Matcher {
+    uint16_t tok1 = kNoToken;
+    uint16_t tok2 = kNoToken;
+    bool Match(uint16_t t) const {
+      return (tok1 != kNoToken && t == tok1) ||
+             (tok2 != kNoToken && t == tok2);
+    }
+  };
+
+  std::vector<Matcher> matchers(total);
+  for (size_t i = 0; i < total; ++i) {
+    const std::string& s = normalized[i];
+    uint16_t t1 = kNoToken, t2 = kNoToken;
+    store.FindToken(s, &t1);
+    std::string c = Canon(s);
+    if (c != s)
+      store.FindToken(c, &t2);
+    if (t1 == kNoToken && t2 == kNoToken)
+      return 0;
+    matchers[i] = {t1, t2};
+  }
+
+  const uint8_t* alts = store.Alts(id);
+  if (!alts)
+    return 0;
+  uint8_t ng = *alts++;
+  int best = 0;
+  for (uint8_t g = 0; g < ng; ++g) {
+    uint8_t L = *alts++;
+    uint16_t nv = Rd16(alts);
+    alts += 2;
+    if (L != total) {
+      alts += static_cast<size_t>(nv) * (static_cast<size_t>(L) * 2 + 4);
+      continue;
+    }
+    for (uint16_t v = 0; v < nv; ++v) {
+      const uint8_t* tok = alts;
+      bool ordered = true;
+      for (uint32_t i = 0; i < total; ++i) {
+        if (!matchers[i].Match(Rd16(tok + i * 2))) {
+          ordered = false;
+          break;
+        }
+      }
+      if (ordered)
+        return 2;
+
+      if (best < 1) {
+        bool used[64] = {false};
+        bool unordered = true;
+        for (uint32_t i = 0; i < total; ++i) {
+          uint16_t t = Rd16(tok + i * 2);
+          bool found = false;
+          for (uint32_t j = 0; j < total; ++j) {
+            if (!used[j] && matchers[j].Match(t)) {
+              used[j] = true;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            unordered = false;
+            break;
+          }
+        }
+        if (unordered)
+          best = 1;
+      }
+      alts += static_cast<size_t>(L) * 2 + 4;
+    }
+  }
+  return best;
 }
 
 int64_t ScoreHybrid(IdsStore& store,
@@ -430,6 +572,13 @@ int64_t ScoreHybrid(IdsStore& store,
       extra_count += kv.second - req;
   }
 
+  int mt = CheckAltsMatch(store, id, normalized);
+  if (mt >= 1) {
+    satisfied = true;
+    missing_count = 0;
+    extra_count = 0;
+  }
+
   int64_t ordered_bonus = 0;
   bool match_macro = cand_leaves.size() == normalized.size();
   if (match_macro) {
@@ -451,7 +600,12 @@ int64_t ScoreHybrid(IdsStore& store,
       }
     }
   }
-  if (match_macro) {
+
+  if (mt == 2) {
+    ordered_bonus = 50000000;
+  } else if (mt == 1) {
+    ordered_bonus = 25000000;
+  } else if (match_macro) {
     ordered_bonus = 20000000;
   } else if (match_macro_rev) {
     ordered_bonus = 10000000;
@@ -470,18 +624,20 @@ int64_t ScoreHybrid(IdsStore& store,
   int64_t score = 0;
   if (satisfied) {
     if (extra_count == 0)
-      score = 50000000 + ordered_bonus;
+      score = 100000000 + ordered_bonus;
     else
-      score = 20000000 - extra_count * 500000 + ordered_bonus / 2;
+      score = 30000000 - extra_count * 500000 + ordered_bonus / 2;
   } else {
     score = -missing_count * 5000000 - extra_count * 500000;
   }
 
   int block = store.Hot(id).block;
   if (block == 0)
-    score += 2000000;
+    score += 5000000;
   else if (block == 1)
-    score += 1000000;
+    score += 2000000;
+
+  score += static_cast<int64_t>(store.Hot(id).freq);
   return score;
 }
 
