@@ -867,16 +867,17 @@ std::vector<uint32_t> SearchHybrid(IdsStore& store,
 
   std::vector<AlgebraStep> steps = ParseAlgebraSteps(components);
   std::vector<std::string> current;
-  bool pure_sub = true;
   bool has_sub = false;
+  bool has_add = false;
 
-  for (const auto& step : steps) {
+  for (size_t i = 0; i < steps.size(); ++i) {
+    const auto& step = steps[i];
     std::string item = NormalizeAlgebraItem(store, step.item, mode);
     if (item.empty())
       continue;
     if (step.op == '+') {
-      if (!current.empty() && has_sub)
-        pure_sub = false;
+      if (i > 0)
+        has_add = true;
       current.push_back(item);
     } else {
       has_sub = true;
@@ -884,11 +885,15 @@ std::vector<uint32_t> SearchHybrid(IdsStore& store,
     }
   }
 
-  // 第一梯队：减法直接扣除剩下的残余部件绝对置顶
+  // 纯减法判定：必须执行过减法，且除首项外没有任何后续加法部件（如 佩 - 亻 = 𫥞，森 - 木 = 林）
+  // 若用户进行了多部件加法组合（如 佩 - 亻 + 木，或 木 + 佩 - 亻），则属于拼字求交模式，运算中间部件绝不置顶！
+  bool is_pure_subtraction = (has_sub && !has_add);
+
+  // 第一梯队：纯减法直接扣除剩下的残余字绝对置顶
   std::vector<uint32_t> sub_results;
   rime::hash_set<uint32_t> sub_seen;
 
-  if (has_sub && !current.empty()) {
+  if (is_pure_subtraction && !current.empty()) {
     for (const auto& c : current) {
       std::string std_c = ToStandardChar(c);
       size_t pos = 0;
