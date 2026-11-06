@@ -718,13 +718,13 @@ std::vector<AlgebraStep> ParseAlgebraSteps(
     size_t i = 0;
     while (i < s.size()) {
       char c = s[i];
-      if (c == '+' || c == '-') {
+      if (c == '+' || c == '-' || c == '\\') {
         curr_op = c;
         ++i;
         continue;
       }
       size_t start = i;
-      while (i < s.size() && s[i] != '+' && s[i] != '-')
+      while (i < s.size() && s[i] != '+' && s[i] != '-' && s[i] != '\\')
         ++i;
       std::string item = s.substr(start, i - start);
       if (item.empty())
@@ -865,7 +865,23 @@ std::vector<uint32_t> SearchHybrid(IdsStore& store,
   if (components.empty())
     return {};
 
-  std::vector<AlgebraStep> steps = ParseAlgebraSteps(components);
+  bool has_variant = false;
+  std::vector<std::string> clean_components;
+  for (const auto& c : components) {
+    if (c == "\\" || c.find('\\') != std::string::npos) {
+      has_variant = true;
+    }
+    std::string clean = c;
+    while (!clean.empty() && clean.back() == '\\')
+      clean.pop_back();
+    while (!clean.empty() && clean.front() == '\\')
+      clean.erase(clean.begin());
+    if (!clean.empty()) {
+      clean_components.push_back(clean);
+    }
+  }
+
+  std::vector<AlgebraStep> steps = ParseAlgebraSteps(clean_components);
   std::vector<std::string> current;
   bool has_sub = false;
   bool has_add = false;
@@ -883,6 +899,36 @@ std::vector<uint32_t> SearchHybrid(IdsStore& store,
       has_sub = true;
       current = ApplySingleSubtraction(store, current, item);
     }
+  }
+
+  // 异体字模式：对当前计算出的汉字展开其全部 Unicode 异写字，绝不掉入倒排搜索
+  if (has_variant && !current.empty()) {
+    std::vector<uint32_t> var_results;
+    rime::hash_set<uint32_t> seen_id;
+    for (const auto& target : current) {
+      std::string std_t = ToStandardChar(target);
+      size_t pos = 0;
+      uint32_t cp = DecodeNext(std_t, &pos);
+      if (!cp) {
+        pos = 0;
+        cp = DecodeNext(target, &pos);
+      }
+      if (!cp)
+        continue;
+
+      const auto* vars = store.FindVariants(cp);
+      if (vars) {
+        for (uint32_t v_cp : *vars) {
+          uint32_t id = store.IdOfCp(v_cp);
+          if (id != kInvalidId && seen_id.insert(id).second) {
+            if (disabled_blocks && disabled_blocks->count(static_cast<int>(store.Hot(id).block)))
+              continue;
+            var_results.push_back(id);
+          }
+        }
+      }
+    }
+    return var_results;
   }
 
   // 纯减法判定：必须执行过减法，且除首项外没有任何后续加法部件（如 佩 - 亻 = 𫥞，森 - 木 = 林）

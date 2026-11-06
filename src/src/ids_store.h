@@ -153,7 +153,11 @@ class IdsStore {
  public:
   static IdsStore& Instance();
 
-  bool Load(const fs::path& data_path, const fs::path& custom_path);
+  bool Load(const fs::path& data_path,
+            const fs::path& custom_path,
+            const fs::path& variants_path = fs::path());
+  const std::vector<uint32_t>* FindVariants(uint32_t cp) const;
+  bool HasVariants() const { return !variants_map_.empty(); }
   bool loaded() const { return loaded_; }
 
   uint32_t num_chars() const { return num_chars_; }
@@ -313,6 +317,8 @@ class IdsStore {
   std::map<std::string, std::vector<uint16_t>> py_map_;
   rime::hash_set<std::string> valid_pinyins_;
   rime::hash_set<int> custom_disabled_blocks_;
+  rime::hash_map<uint32_t, std::vector<uint32_t>> variants_map_;
+  void LoadVariants(const fs::path& path);
   bool loaded_ = false;
 };
 

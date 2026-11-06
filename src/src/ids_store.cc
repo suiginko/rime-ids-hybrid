@@ -313,7 +313,7 @@ bool IdsStore::SmallContains(const KeyEntry& e, uint32_t id) const {
   return std::binary_search(a, a + e.full_cnt, id);
 }
 
-bool IdsStore::Load(const fs::path& data_path, const fs::path& custom_path) {
+bool IdsStore::Load(const fs::path& data_path, const fs::path& custom_path, const fs::path& variants_path) {
   if (loaded_)
     return true;
 
@@ -364,6 +364,17 @@ bool IdsStore::Load(const fs::path& data_path, const fs::path& custom_path) {
   }
   if (!custom_path.empty())
     ApplyCustomRules(custom_path);
+
+  fs::path vp = variants_path;
+  if (vp.empty() || !fs::exists(vp)) {
+    fs::path candidate = data_path.parent_path() / "ids_variants.txt";
+    if (fs::exists(candidate))
+      vp = candidate;
+  }
+  if (!vp.empty() && fs::exists(vp)) {
+    LoadVariants(vp);
+  }
+
   loaded_ = true;
   return true;
 }
@@ -472,6 +483,85 @@ void IdsStore::ApplyCustomRules(const fs::path& path) {
     }
   }
   in.close();
+}
+
+
+namespace {
+
+uint32_t LocalDecodeNext(const std::string& s, size_t* i) {
+  if (!i || *i >= s.size())
+    return 0;
+  unsigned char c = static_cast<unsigned char>(s[*i]);
+  if (c < 0x80) {
+    (*i)++;
+    return c;
+  }
+  if ((c & 0xE0) == 0xC0 && *i + 1 < s.size()) {
+    uint32_t cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(s[*i + 1]) & 0x3F);
+    *i += 2;
+    return cp;
+  }
+  if ((c & 0xF0) == 0xE0 && *i + 2 < s.size()) {
+    uint32_t cp = ((c & 0x0F) << 12) |
+                  ((static_cast<unsigned char>(s[*i + 1]) & 0x3F) << 6) |
+                  (static_cast<unsigned char>(s[*i + 2]) & 0x3F);
+    *i += 3;
+    return cp;
+  }
+  if ((c & 0xF8) == 0xF0 && *i + 3 < s.size()) {
+    uint32_t cp = ((c & 0x07) << 18) |
+                  ((static_cast<unsigned char>(s[*i + 1]) & 0x3F) << 12) |
+                  ((static_cast<unsigned char>(s[*i + 2]) & 0x3F) << 6) |
+                  (static_cast<unsigned char>(s[*i + 3]) & 0x3F);
+    *i += 4;
+    return cp;
+  }
+  (*i)++;
+  return 0;
+}
+
+}  // namespace
+
+void IdsStore::LoadVariants(const fs::path& path) {
+  std::ifstream in(path);
+  if (!in)
+    return;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == '#')
+      continue;
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    size_t tab = line.find('\t');
+    if (tab == std::string::npos)
+      continue;
+    std::string base_char = line.substr(0, tab);
+    std::string vars_str = line.substr(tab + 1);
+    size_t pos = 0;
+    uint32_t base_cp = LocalDecodeNext(base_char, &pos);
+    if (!base_cp)
+      continue;
+
+    std::vector<uint32_t> var_cps;
+    size_t vpos = 0;
+    while (vpos < vars_str.size()) {
+      while (vpos < vars_str.size() && (vars_str[vpos] == ' ' || vars_str[vpos] == '\t'))
+        ++vpos;
+      if (vpos >= vars_str.size())
+        break;
+      uint32_t cp = LocalDecodeNext(vars_str, &vpos);
+      if (cp && cp != base_cp)
+        var_cps.push_back(cp);
+    }
+    if (!var_cps.empty()) {
+      variants_map_[base_cp] = std::move(var_cps);
+    }
+  }
+}
+
+const std::vector<uint32_t>* IdsStore::FindVariants(uint32_t cp) const {
+  auto it = variants_map_.find(cp);
+  return it == variants_map_.end() ? nullptr : &it->second;
 }
 
 }  // namespace ids_reverse
