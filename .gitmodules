@@ -1,0 +1,3 @@
+[submodule "ids-reverse"]
+	path = ids-reverse
+	url = https://github.com/Carlson24/librime-ids-reverse.git
